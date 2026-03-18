@@ -7,6 +7,7 @@ from .base_tool import BaseTool, ToolMetadata
 from .statistics import StatisticsTool
 from .evaluate import EvaluateTool
 from .llm_tool import LLMTool
+from .polynomial_fit import PolynomialFitTool
 
 __all__ = [
     "BaseTool",
@@ -14,4 +15,5 @@ __all__ = [
     "StatisticsTool",
     "EvaluateTool",
     "LLMTool",
+    "PolynomialFitTool",
 ]
