@@ -1,3 +1,4 @@
+# Copyright (c) 2026-present, Yumeow. Licensed under the MIT License.
 """LLM 工具的单元测试。"""
 
 import pytest

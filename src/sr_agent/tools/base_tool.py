@@ -1,3 +1,4 @@
+# Copyright (c) 2026-present, Yumeow. Licensed under the MIT License.
 """工具基类定义。
 
 所有工具都应继承自 BaseTool，并提供统一的接口。

@@ -1,3 +1,4 @@
+# Copyright (c) 2026-present, Yumeow. Licensed under the MIT License.
 """多项式拟合工具的单元测试。"""
 
 import numpy as np

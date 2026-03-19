@@ -1,3 +1,4 @@
+# Copyright (c) 2026-present, Yumeow. Licensed under the MIT License.
 """公式评估工具。
 
 评估数学公式对数据的拟合能力，返回多种评价指标。

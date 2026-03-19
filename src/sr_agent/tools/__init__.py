@@ -1,3 +1,4 @@
+# Copyright (c) 2026-present, Yumeow. Licensed under the MIT License.
 """工具模块。
 
 所有工具都应继承自 BaseTool，并实现 execute 方法。

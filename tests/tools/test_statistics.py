@@ -1,3 +1,4 @@
+# Copyright (c) 2026-present, Yumeow. Licensed under the MIT License.
 """数据统计分析工具的单元测试。"""
 
 import numpy as np

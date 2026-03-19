@@ -1,3 +1,4 @@
+# Copyright (c) 2026-present, Yumeow. Licensed under the MIT License.
 """多项式拟合工具。
 
 提供对输入数据的多项式拟合功能，支持自定义最高阶次数、交叉项控制等。

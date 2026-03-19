@@ -1,3 +1,4 @@
+# Copyright (c) 2026-present, Yumeow. Licensed under the MIT License.
 """数据统计分析工具。
 
 提供数据分布的基本统计量计算，包括最小值、最大值、均值、方差等。

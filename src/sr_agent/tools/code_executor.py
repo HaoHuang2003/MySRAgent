@@ -1,3 +1,4 @@
+# Copyright (c) 2026-present, Yumeow. Licensed under the MIT License.
 """代码执行工具。
 
 提供一个安全的 Python 代码执行环境，允许运行无害的计算代码。

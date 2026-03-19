@@ -1,3 +1,4 @@
+# Copyright (c) 2026-present, Yumeow. Licensed under the MIT License.
 """LLM 调用工具。
 
 提供统一的 LLM 调用接口，支持多种 LLM 提供商。
