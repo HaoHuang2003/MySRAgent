@@ -6,6 +6,7 @@
 from __future__ import annotations
 import logging
 import numpy as np
+from collections import defaultdict
 from typing import Any, Dict, List, Tuple
 from .api.llm_api import LLMAPI
 from .tools import BaseTool
@@ -146,37 +147,31 @@ Please start by analyzing the data to understand the relationship between featur
             _logger.debug(f"Built prompt with {len(messages)} messages")
 
             # Step 2: 请求 LLM，得到 Response
-            llm_response = self.request_llm(messages)
-            _logger.debug(f"LLM response: {llm_response[:200]}...")
+            response = self.request_llm(messages)
+            _logger.debug(f"LLM response: {response[:200]}...")
 
             # Step 3: 解析 Response，得到 Action
-            action = self.parse_actions(llm_response)
-            # 确保至少有一个 action
-            if not action:
-                action = [('response', {'content': llm_response})]
-            _logger.info(f"Parsed action: {action[0]}")
+            actions = self.parse_actions(response)
+            _logger.info(f"Parsed actions: {actions}")
 
             # Step 4: 执行 Action，得到 Result
-            result = self.execute_action(action)
-            _logger.debug(f"Action result: {result}")
+            results = self.execute_action(actions)
+            _logger.debug(f"Action result: {results}")
 
             # Step 5: 基于 Action 和 Result 更新 Buffer
-            self.update_buffer(action, result)
+            self.update_buffer(response, actions, results)
 
             # 记录历史
             history.append({
                 "iteration": iteration + 1,
-                "action": action,
-                "result": result,
+                "messages": messages,
+                "respone": response,
+                "actions": actions,
+                "results": results,
             })
 
-            # 检查终止条件
-            if self._should_stop(iteration, action, result):
-                _logger.info("Termination condition met")
-                break
-
             # 更新最优结果
-            for act, res in zip(action, result):
+            for act, res in zip(actions, results):
                 if res is not None and isinstance(res, dict):
                     if res.get('success') and res.get('mse') is not None:
                         if res['mse'] < best_score:
@@ -192,13 +187,12 @@ Please start by analyzing the data to understand the relationship between featur
                             }
 
             # 统计本轮工具调用次数
-            tool_calls_this_round = {}
-            for name, _ in action:
-                if name not in ('think', 'response'):
-                    tool_calls_this_round[name] = tool_calls_this_round.get(name, 0) + 1
+            tmp = defaultdict(int)
+            for name, _ in actions:
+                tmp[name] += 1
+            tool_calls_str = ';'.join(f"{name}: {count} ({tmp[name]} new)" for name, count in self.tool_call_counter.named_count.items())
 
             # 打印本轮日志
-            tool_calls_str = "; ".join(f"{n}(+{c})" for n, c in sorted(tool_calls_this_round.items())) if tool_calls_this_round else "0"
             log = {
                 "Best": f"{best_formula} (MSE={best_score:.6g})" if best_formula else "None",
                 "Tool Calls": tool_calls_str,
@@ -301,31 +295,3 @@ Please start by analyzing the data to understand the relationship between featur
                 # 工具调用
                 self.buffer.append({'role': 'assistant', 'content': f"Action: {name}({params})"})
                 self.buffer.append({'role': 'user', 'content': str(result)})
-
-    def _should_stop(self, iteration: int, actions: List[Tuple[str, Any]], results: List[Dict|None]) -> bool:
-        """检查是否应该终止迭代。
-
-        Args:
-            iteration: 当前迭代次数。
-            actions: 执行的 Action 列表。
-            results: 执行结果列表。
-
-        Returns:
-            是否应该终止。
-        """
-        # 检查是否有明确的 Final Answer（不是默认的 response）
-        for action, result in zip(actions, results):
-            if action[0] == 'response':
-                content = action[1].get('content', '') if isinstance(action[1], dict) else ''
-                # 只有包含 "Final Answer" 标记的才算真正的终止信号
-                if 'Final Answer' in content or 'final answer' in content.lower():
-                    return True
-
-        # 检查是否达到了很好的分数（例如 MSE < 1e-6）
-        for result in results:
-            if result is not None and isinstance(result, dict):
-                if result.get('success') and result.get('mse') is not None:
-                    if result['mse'] < 1e-10:
-                        return True
-
-        return False
