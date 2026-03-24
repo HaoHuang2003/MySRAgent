@@ -88,4 +88,11 @@ class BaseTool(ABC, FactoryMixin):
 
     def __call__(self, *args, **kwargs) -> Dict[str, Any]:
         """允许像函数一样调用工具。"""
-        return self.execute(*args, **kwargs)
+        try:
+            return self.execute(*args, **kwargs)
+        except Exception as e:
+            _logger.error(f"Error executing {self.metadata.name if self.metadata else 'unknown'}: {e}")
+            return {
+                "success": False,
+                "error": f"{type(e).__name__}: {str(e)}",
+            }

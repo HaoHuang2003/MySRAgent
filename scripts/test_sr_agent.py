@@ -1,9 +1,6 @@
 import numpy as np
 import sys
 import os
-from sr_agent.utils import init_logger
-
-init_logger('sr_agent', exp_name='Test')
 
 # 添加 src 目录到路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
@@ -22,8 +19,10 @@ if __name__ == '__main__':
     agent = SRAgent(
         llm_provider='siliconflow',
         llm_model='Qwen3-8B',
+        tools=['statistics_analysis', 'evaluate_formula', 'polynomial_fit'],
         max_iteration=20,
-        verbose=True,
+        verbose=True,  # 启用 DEBUG 级别日志
+        # save_path='logs/test.log',  # 可选：保存到文件
     )
 
     # 执行符号回归任务

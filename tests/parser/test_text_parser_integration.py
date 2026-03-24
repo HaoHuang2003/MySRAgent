@@ -41,7 +41,7 @@ class TestTextParserLLMIntegration:
             try:
                 # 调用 LLM
                 llm_tool = LLMTool()
-                result = llm_tool.execute(
+                result = llm_tool(
                     llm_provider="siliconflow",
                     llm_model="Qwen3-8B",
                     messages=[{"role": "user", "content": prompt}]

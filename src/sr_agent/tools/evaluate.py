@@ -37,7 +37,7 @@ class EvaluateTool(BaseTool):
 
     metadata = ToolMetadata(
         name="evaluate_formula",
-        description="Evaluate how well a mathematical formula fits the data. Returns MSE, MAE, R² metrics. Formula format: 'x1**2 + sin(x2) + 3.5'. Supports basic operations, trig functions, exp/log.",
+        description="Evaluate how well a mathematical formula fits the data. Returns MSE, MAE, R² metrics. Formula format: 'x1**2 + sin(x2) + 3.5'. Supports basic operations, trig functions, exp/log. When you are confident about a formula, call this tool to check its ability to fit the data. Floating-point numbers in the formula will be automatically optimized to better fit the data.",
         category="evaluation",
     )
 

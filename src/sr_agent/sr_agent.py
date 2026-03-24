@@ -7,11 +7,12 @@ from __future__ import annotations
 import logging
 import numpy as np
 from collections import defaultdict
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 from .api.llm_api import LLMAPI
 from .tools import BaseTool
 from .parser import BaseParser
 from .utils import FactoryMixin, ParallelTimer, NamedTimer
+from .utils.logger import setup_logging
 
 _logger = logging.getLogger(f'sr_agent.{__name__}')
 
@@ -37,6 +38,7 @@ class SRAgent(FactoryMixin):
         max_iteration: int = 100,
         verbose: bool = False,
         tool_parser: str | BaseParser = 'text',
+        save_path: Optional[str] = None,
     ):
         """初始化 Agent。
 
@@ -45,9 +47,12 @@ class SRAgent(FactoryMixin):
             llm_model: 模型名称（如 "gpt-4o-mini"）。
             tools: 可用工具名称列表。None 表示使用全部工具。
             max_iteration: 最大迭代次数，默认 100。
-            verbose: 是否启用详细日志。
+            verbose: 是否启用详细日志（DEBUG 级别）。
             tool_parser: 工具解析器，可以是字符串（'text', 'json'）或 BaseParser 实例。
+            save_path: 日志文件保存路径。None 表示不保存到文件。
         """
+        # 配置日志：如果用户尚未配置，则根据 verbose 和 save_path 自动配置
+        setup_logging(info_level='debug' if verbose else 'info', save_path=save_path, force=False)
         self.llm_api = LLMAPI.load(llm_provider, llm_model)
         self.buffer = []
         self.tools = [tool for tool in BaseTool.load_tool_list() if tools is None or tool['name'] in tools]
@@ -57,6 +62,7 @@ class SRAgent(FactoryMixin):
         self.money_counter = ParallelTimer(unit='$')
         self.tool_call_counter = ParallelTimer(unit='call')
         self.tool_context = {}
+        self.save_path = save_path
 
         # 初始化工具解析器
         if isinstance(tool_parser, BaseParser):
@@ -64,11 +70,6 @@ class SRAgent(FactoryMixin):
         else:
             self.tool_parser = BaseParser.create(tool_parser, tool_list=tools)
 
-        if verbose:
-            _logger.setLevel(logging.DEBUG)
-            for handler in _logger.handlers:
-                handler.setLevel(logging.DEBUG)
-            _logger.debug("Verbose mode enabled, set logging level to DEBUG")
         _logger.info(f"Initialized {self.__class__.__name__} with model {llm_model}")
 
     def fit(
@@ -145,18 +146,22 @@ Please start by analyzing the data to understand the relationship between featur
             # Step 1: 根据 Buffer 创建 Prompt
             messages = self.build_prompt()
             _logger.debug(f"Built prompt with {len(messages)} messages")
+            _logger.debug(f"Prompt messages: {messages}")
 
             # Step 2: 请求 LLM，得到 Response
             response = self.request_llm(messages)
             _logger.debug(f"LLM response: {response[:200]}...")
+            _logger.debug(f"Full LLM response: {response}")
 
             # Step 3: 解析 Response，得到 Action
             actions = self.parse_actions(response)
             _logger.info(f"Parsed actions: {actions}")
+            _logger.debug(f"Full parsed actions: {actions}")
 
             # Step 4: 执行 Action，得到 Result
             results = self.execute_action(actions)
             _logger.debug(f"Action result: {results}")
+            _logger.debug(f"Full action results: {results}")
 
             # Step 5: 基于 Action 和 Result 更新 Buffer
             self.update_buffer(response, actions, results)
@@ -279,19 +284,15 @@ Please start by analyzing the data to understand the relationship between featur
 
         return results
 
-    def update_buffer(self, actions: List[Tuple[str, Any]], results: List[Dict|None]) -> None:
+    def update_buffer(self, response: str, actions: List[Tuple[str, Any]], results: List[Dict|None]) -> None:
         """根据 Action 和结果更新 Buffer。
 
         Args:
             actions: 执行的 Action。
             results: 执行结果。
         """
+        self.buffer.append({'role': 'assistant', 'content': response})
         for (name, params), result in zip(actions, results):
-            if name == 'think':
-                self.buffer.append({'role': 'assistant', 'content': f"Thought: {params.get('content', '')}"})
-            elif name == 'response':
-                self.buffer.append({'role': 'assistant', 'content': f"Final Answer: {params.get('content', '')}"})
-            else:
-                # 工具调用
-                self.buffer.append({'role': 'assistant', 'content': f"Action: {name}({params})"})
-                self.buffer.append({'role': 'user', 'content': str(result)})
+            # 工具调用
+            self.buffer.append({'role': 'user', 'content': f"Assistant call `{name}` with params `{params}`"})
+            self.buffer.append({'role': 'user', 'content': f"Results: {str(result)}"})

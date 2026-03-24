@@ -78,7 +78,7 @@ class SiliconFlowAPI(LLMAPI):
             yield choice["message"]["content"]
         usage = {'token': {}, 'price': {}}
         usage['token']['prompt'] = (prompt_tokens := responses["usage"]["prompt_tokens"])
-        usage['token']['reason'] = (reason_tokens := responses["usage"]["completion_tokens_details"]["reasoning_tokens"])
+        usage['token']['reason'] = (reason_tokens := responses["usage"].get("completion_tokens_details", {}).get("reasoning_tokens", 0))
         usage['token']['answer'] = (answer_tokens := responses["usage"]["completion_tokens"] - reason_tokens)
         if (other := responses["usage"]["total_tokens"] - prompt_tokens - answer_tokens - reason_tokens) != 0:
             usage['token']['other'] = other
