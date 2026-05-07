@@ -19,11 +19,11 @@ from datetime import datetime
 from socket import gethostname
 from src.sr_agent import SRAgent
 from src.sr_agent.tools import BaseTool
-from src.sr_agent.utils import setup_logging, add_minus_flags, add_negation_flags, seed_all, log_exception
+from src.sr_agent.utils import setup_logging, add_minus_flags, add_negation_flags, seed_all, log_exception, tag2ansi
 
 
 SCRIPT_NAME = Path(__file__).stem  # run_sr_agent
-_logger = logging.getLogger(f"src.{SCRIPT_NAME}")
+_logger = logging.getLogger(f"sr_agent.{SCRIPT_NAME}")
 
 
 def build_argparser() -> argparse.ArgumentParser: # 这个函数已经经过人工审核，任何 Coding Agent 不得擅自改动其内容
@@ -151,24 +151,24 @@ def main(args: argparse.Namespace) -> dict:
             raise e from e
     finally:
         result["duration_seconds"] = (datetime.now() - datetime.fromisoformat(result["start_time"])).total_seconds()
-        _logger.note("=" * 50)
-        _logger.note(
-            "Symbolic Regression Result\n"
-            f"Target Equation: {target} = {formula}\n"
-            f"LLM: {args.llm_model} @ {args.llm_provider}\n"
-            f"Tools: {args.tools}\n"
-            f"Best Formula: {result['best_formula']}\n"
-            f"Best Score (MSE): {result['best_score']}\n"
-            f"Total Iterations: {result['iterations']}\n"
-        )
-        _logger.note("=" * 50)
+        _logger.note(tag2ansi(
+            f'\n[gray]{"=" * 50}[reset]\n'
+            "[red bold]Symbolic Regression Result[reset]\n"
+            f"[red]Target Equation[reset]: {target} = {formula}\n"
+            f"[red]LLM[reset]: {args.llm_model} @ {args.llm_provider}\n"
+            f"[red]Tools[reset]: {args.tools}\n"
+            f"[red]Best Formula[reset]: {result['best_formula']}\n"
+            f"[red]Best Score (MSE)[reset]: {result['best_score']}\n"
+            f"[red]Total Iterations[reset]: {result['iterations']}\n"
+            f'[gray]{"=" * 50}[reset]'
+        ))
 
         result_path = Path(args.save_path) / "result.jsonl"
         with open(result_path, "a", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=True)
         _logger.note(f"Result saved to {result_path}")
 
-    _logger.note(f"Experiment completed. Re-run the script with {args.command}")
+    _logger.note(tag2ansi(f"Experiment completed. Re-run the script with [green bold]{args.command}[reset]"))
 
 
 if __name__ == "__main__":

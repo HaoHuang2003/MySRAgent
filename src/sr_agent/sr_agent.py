@@ -177,6 +177,7 @@ class SRAgent(FactoryMixin):
             # Step 2: 请求 LLM 得到 Content 和 Tool Calls
             for content, tool_calls, message in (llm_result := self.llm_api(prompt, n=1)):
                 pass
+            self.buffer.append(message)
             self.record_llm_result(llm_result)
             tmp = render_markdown(content.strip() or "(empty)")
             if '\n' in tmp: tmp = '\n        '.join(['', *tmp.splitlines()])
@@ -188,56 +189,66 @@ class SRAgent(FactoryMixin):
             _logger.info(f"Action result: {results}")
 
             # Step 4: 基于 Response Content、Tool Calls 和 Results 更新 Buffer
-            self.buffer.append(message)
             self.buffer.extend(self.parser.format_tool_result_messages(tool_calls, results))
 
             # 更新最优结果
             for act, res in zip(tool_calls, results):
                 if res is None:
                     continue
-                result_dict = res.result if isinstance(res, ToolCallResult) else res
-                if not isinstance(result_dict, dict):
+                elif not isinstance(res.result, dict):
                     continue
-                metrics = result_dict.get('metrics') or {}
-                mse = result_dict.get('mse', metrics.get('mse'))
-                if mse is not None and (best_record is None or mse < best_record['score']):
-                    best_formula = result_dict.get('formula') or act.params.get('eq')
+                elif 'metrics' not in res.result:
+                    continue
+                elif 'mse' not in res.result['metrics']:
+                    continue
+                elif (mse := res.result['metrics']['mse']) is None:
+                    continue
+                elif best_record is not None and mse >= best_record['mse']:
+                    continue
+                else:
                     best_record = {
-                        "formula": best_formula,
-                        "score": mse,
+                        "formula": res.result.get('formula') or act.params.get('eq'),
                         "mse": mse,
-                        "rmse": result_dict.get('rmse', metrics.get('rmse')),
-                        "mae": result_dict.get('mae', metrics.get('mae')),
-                        "r2": result_dict.get('r2', metrics.get('r2')),
+                        "rmse": res.result['metrics'].get('rmse'),
+                        "mae": res.result['metrics'].get('mae'),
+                        "r2": res.result['metrics'].get('r2'),
                     }
 
             # 统计本轮工具调用次数
-            tmp = defaultdict(int)
+            new_count = defaultdict(int)
             for tool_call in tool_calls:
-                tmp[tool_call.name] += 1
-            tool_calls_str = ';'.join(f"{name}: {count} ({tmp[name]} new)" for name, count in self.tool_call_counter.named_count.items())
+                new_count[tool_call.name] += 1
+            tool_calls_str = ', '.join(
+                f"{name}: {count} ({new_count[name]} new)" 
+                for name, count in self.tool_call_counter.named_count.items()
+            )
 
             # 打印本轮日志
             log = {
-                "Best": f"{best_record['formula']} (MSE={best_record['score']:.6g})" if best_record else "None",
+                "Best": f"{best_record['formula']} (MSE={best_record['mse']:.6g})" if best_record else "None",
                 "Tool Calls": tool_calls_str,
                 "Speed": self.named_timer.to_str('pace', None, None),
                 "Time Usage": self.named_timer.to_str('time', 'pace', 'by_time'),
                 "Token Usage": self.token_counter.to_str('count', 'speed', 'by_count'),
                 "Price Usage": self.money_counter.to_str('count', 'speed', 'by_count'),
             }
-            msg = " | ".join(f"\033[4m{k}\033[0m={v}" for k, v in log.items())
-            _logger.info(msg)
+            msg = "[gray] | [reset]".join(f"[blue]{k}[reset]={v}" for k, v in log.items())
+            _logger.info(tag2ansi(msg))
 
         # ========== 后处理阶段 ==========
-        _logger.info(
-            f"Fit completed. Best formula: {best_record['formula'] if best_record else None}, "
-            f"Best score: {best_record['score'] if best_record else None}"
-        )
+        if best_record is None:
+            best_record = {}
+            _logger.warning("No valid formula found during fitting.")
+        else:
+            _logger.note(
+                "Fit completed. Best Record:" +
+                ', '.join(tag2ansi(f"[red bold]{k}[reset]={v}") for k, v in best_record.items())
+            )
 
         return {
-            "best_formula": best_record['formula'] if best_record else None,
-            "best_score": best_record['score'] if best_record else None,
+            "best_formula": best_record.get('formula', None),
+            "best_mse": best_record.get('mse', None),
+            "best_record": best_record,
             "iterations": L,
         }
 
@@ -257,37 +268,24 @@ class SRAgent(FactoryMixin):
         """执行 Action。
 
         Args:
-            actions: 多个 (name, value) 元组构成的数组
+            actions: LLM 返回的 Action 列表，每个 Action 包含 name 和 params。
 
         Returns:
-            执行结果列表。对于不需要执行的 name（例如 think 或者 response）返回 None
+            执行结果列表。
         """
         results = []
         tool_map = {tool.metadata.name: tool for tool in self.tools}
         for tool_call in actions:
-            if tool_call.name == 'think':
-                results.append(None)
-            elif tool_call.name == 'response':
-                results.append(None)
+            if (tool := tool_map.get(tool_call.name)) is None:
+                _logger.trace(f'Unknown tool call: {tool_call.name}. Skipping execution.')
+                result = ToolCallResult(
+                    ok=False,
+                    result={},
+                    result_str=f'Unknown tool calling for "{tool_call.name}"',
+                    meta_data={"tool": tool_call.name},
+                )
             else:
+                result = tool(**tool_call.params)
                 self.tool_call_counter.add(tool_call.name)
-                if (tool := tool_map.get(tool_call.name)) is None:
-                    results.append(ToolCallResult(
-                        ok=False,
-                        result={},
-                        result_str=f'Unknown tool calling for "{tool_call.name}"',
-                        meta_data={"tool": tool_call.name},
-                    ))
-                    continue
-                if not isinstance(tool_call.params, dict):
-                    result = ToolCallResult(
-                        ok=False,
-                        result={},
-                        result_str=f"Invalid parameters for tool '{tool_call.name}': expected dict, got {type(tool_call.params).__name__}",
-                        meta_data={"tool": tool_call.name},
-                    )
-                else:
-                    result = tool(**tool_call.params)
-                results.append(result)
-
+            results.append(result)
         return results
