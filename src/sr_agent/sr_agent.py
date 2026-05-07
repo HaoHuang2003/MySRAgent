@@ -169,127 +169,22 @@ class SRAgent(FactoryMixin):
                 _logger.info(f"Start Refinement Step {L}/{self.max_refinement_depth}")
 
                 # Step 1: 根据 Buffer 创建 Prompt
-                prompt = self.buffer
-                _logger.info(f"Built prompt with {len(prompt)} messages.")
-                logs = []
-                for msg in prompt:
-                    msg = msg.copy()
-                    order = ['role', 'tool_call_id', 'reasoning', 'content', 'tool_call']
-                    order = [k for k in order if k in msg] + [k for k in msg if k not in order]
-                    msg = { k: msg[k] for k in order }
-
-                    log = ''
-                    log += tag2ansi(f"[red bold][{msg.pop('role')}][reset]")
-                    for k, v in msg.items():
-                        if k == 'content':
-                            v = render_markdown(v or "(empty)")
-                        v = str(v).strip()
-                        if '\n' in v:
-                            v = '\n        '.join(['', *v.splitlines()])
-                        log += tag2ansi(f"\n    [blue]{k}[reset]") + '=' + v
-                    logs.append(log)
-                _logger.debug(f"Messages:\n" + '\n---\n'.join(logs))
+                prompt = self.build_prompt(self.buffer)
 
                 # Step 2: 请求 LLM 得到 Content 和 Tool Calls
-                response_list = []
-                for content, tool_calls, message in (llm_result := self.llm_api(prompt, n=self.local_sample_size)):
-                    tmp = render_markdown(content or "(empty)").strip()
-                    tmp = '\n        '.join(['', *tmp.splitlines()]) if '\n' in tmp else tmp
-                    _logger.info(
-                        f"LLM branch: {len(response_list) + 1}/{self.local_sample_size}\n"
-                        f"LLM response content: {tmp}\n"
-                        f"LLM tool calls: {tool_calls or "(None)"}"
-                    )
-                    response_list.append((content, tool_calls, message))
-                self.record_llm_result(llm_result)
+                response_list = self.request_llm(prompt)
 
                 # Step 3: 执行 Tool Calls 得到 Result
-                all_tool_calls = []
-                num_tool_calls = []
-                for _, tool_calls, _ in response_list:
-                    all_tool_calls.extend(tool_calls or [])
-                    num_tool_calls.append(len(tool_calls or []))
-                all_results = self.execute_action(all_tool_calls)
-                results_iter = iter(all_results)
-                results_list = [list(islice(results_iter, l)) for l in num_tool_calls]
-                _logger.info(f"Action result: {all_results}")
+                results_list = self.get_results(response_list)
 
                 # Step 4: 基于 Response Content、Tool Calls 和 Results 更新 Buffer
-                selected_idx = 0
-                selected_mse = float('inf')
-                for results_idx, results in enumerate(results_list):
-                    for result in results:
-                        if 'formula' in result and result['metrics']['mse'] < selected_mse:
-                            selected_idx = results_idx
-                            selected_mse = result['metrics']['mse']
-                content, tool_calls, message = response_list[selected_idx]
-                results = results_list[selected_idx]
-content_parts = [content]
-                tool_calls = list(tool_calls or [])
-                results = list(results)
-                message_tool_calls = message.get('tool_calls')
-                for results_idx, ((extra_content, extra_tool_calls, _), extra_results) in enumerate(zip(response_list, results_list)):
-                    if results_idx == selected_idx:
-                        continue
-                    extra_content_added = False
-                    for extra_tool_call, extra_result in zip(extra_tool_calls or [], extra_results):
-                        if 'formula' in extra_result:
-                            tool_calls.append(extra_tool_call)
-                            results.append(extra_result)
-                            if message_tool_calls is not None and extra_tool_call.raw is not None:
-                                message_tool_calls.append(extra_tool_call.raw)
-                            if not extra_content_added:
-                                content_parts.append(extra_content)
-                                extra_content_added = True
-                content = '\n\n'.join(part for part in content_parts if part)
-                message['content'] = content
-                _logger.info(f"Selected LLM branch: {selected_idx + 1}/{len(response_list)}")
-                self.buffer.append(message)
-                self.buffer.extend(self.parser.format_tool_result_messages(tool_calls, results))
+                self.update_buffer(response_list, results_list)
 
-                # 更新最优结果
-                for act, res in zip(tool_calls, results):
-                    if res is None:
-                        continue
-                    elif not isinstance(res.result, dict):
-                        continue
-                    elif 'metrics' not in res.result:
-                        continue
-                    elif 'mse' not in res.result['metrics']:
-                        continue
-                    elif (mse := res.result['metrics']['mse']) is None:
-                        continue
-                    elif best_record is not None and mse >= best_record['mse']:
-                        continue
-                    else:
-                        best_record = {
-                            "formula": res.result.get('formula') or act.params.get('eq'),
-                            "mse": mse,
-                            "rmse": res.result['metrics'].get('rmse'),
-                            "mae": res.result['metrics'].get('mae'),
-                            "r2": res.result['metrics'].get('r2'),
-                        }
+                # Step 5: 更新最优结果
+                best_record = self.update_best(best_record, response_list, results_list)
 
-                # 统计本轮工具调用次数
-                new_count = defaultdict(int)
-                for tool_call in all_tool_calls:
-                    new_count[tool_call.name] += 1
-                tool_calls_str = ', '.join(
-                    f"{name}: {count} ({new_count[name]} new)" 
-                    for name, count in self.tool_call_counter.named_count.items()
-                )
-
-                # 打印本轮日志
-                log = {
-                    "Best": f"{best_record['formula']} (MSE={best_record['mse']:.6g})" if best_record else "None",
-                    "Tool Calls": tool_calls_str,
-                    "Speed": self.named_timer.to_str('pace', None, None),
-                    "Time Usage": self.named_timer.to_str('time', 'pace', 'by_time'),
-                    "Token Usage": self.token_counter.to_str('count', 'speed', 'by_count'),
-                    "Price Usage": self.money_counter.to_str('count', 'speed', 'by_count'),
-                }
-                msg = "[gray] | [reset]".join(f"[blue]{k}[reset]={v}" for k, v in log.items())
-                _logger.info(tag2ansi(msg))
+                # Step 6: 打印本轮日志
+                self.log_info(response_list, best_record)
 
         # ========== 后处理阶段 ==========
         if best_record is None:
@@ -307,6 +202,136 @@ content_parts = [content]
             "best_record": best_record,
             "iterations": L,
         }
+
+    def build_prompt(self, buffer: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """根据 Buffer 构建 LLM Prompt。"""
+        prompt = self.buffer
+        _logger.info(f"Built prompt with {len(prompt)} messages.")
+        logs = []
+        for msg in prompt:
+            msg = msg.copy()
+            order = ['role', 'tool_call_id', 'reasoning', 'content', 'tool_call']
+            order = [k for k in order if k in msg] + [k for k in msg if k not in order]
+            msg = { k: msg[k] for k in order }
+
+            log = ''
+            log += tag2ansi(f"[red bold][{msg.pop('role')}][reset]")
+            for k, v in msg.items():
+                if k == 'content':
+                    v = render_markdown(v or "(empty)")
+                v = str(v).strip()
+                if '\n' in v:
+                    v = '\n        '.join(['', *v.splitlines()])
+                log += tag2ansi(f"\n    [blue]{k}[reset]") + '=' + v
+            logs.append(log)
+        _logger.debug(f"Messages:\n" + '\n---\n'.join(logs))
+        return prompt
+    
+    def request_llm(self, prompt: List[Dict[str, Any]]):
+        """请求 LLM 得到 Content 和 Tool Calls。"""
+        response_list = []
+        for content, tool_calls, message in (llm_result := self.llm_api(prompt, n=self.local_sample_size)):
+            tmp = render_markdown(content or "(empty)").strip()
+            tmp = '\n        '.join(['', *tmp.splitlines()]) if '\n' in tmp else tmp
+            _logger.info(
+                f"LLM branch: {len(response_list) + 1}/{self.local_sample_size}\n"
+                f"LLM response content: {tmp}\n"
+                f"LLM tool calls: {tool_calls or "(None)"}"
+            )
+            response_list.append((content, tool_calls, message))
+        self.record_llm_result(llm_result)
+        return response_list
+    
+    def get_results(self, response_list):
+        all_tool_calls = []
+        num_tool_calls = []
+        for _, tool_calls, _ in response_list:
+            all_tool_calls.extend(tool_calls or [])
+            num_tool_calls.append(len(tool_calls or []))
+        all_results = self.execute_action(all_tool_calls)
+        results_iter = iter(all_results)
+        results_list = [list(islice(results_iter, l)) for l in num_tool_calls]
+        _logger.info(f"Action result: {all_results}")
+        return results_list
+    
+    def update_buffer(self, response_list, results_list):
+        selected_idx = 0
+        selected_mse = float('inf')
+        for results_idx, results in enumerate(results_list):
+            for result in results:
+                if result.get('formula') is not None and result['metrics']['mse'] < selected_mse:
+                    selected_idx = results_idx
+                    selected_mse = result['metrics']['mse']
+        content, tool_calls, message = response_list[selected_idx]
+        results = results_list[selected_idx]
+        content_parts = [content]
+        tool_calls = list(tool_calls or [])
+        results = list(results)
+        message_tool_calls = message.get('tool_calls')
+        for results_idx, ((extra_content, extra_tool_calls, _), extra_results) in enumerate(zip(response_list, results_list)):
+            if results_idx == selected_idx:
+                continue
+            extra_content_added = False
+            for extra_tool_call, extra_result in zip(extra_tool_calls or [], extra_results):
+                if extra_result.get('formula') is not None:
+                    tool_calls.append(extra_tool_call)
+                    results.append(extra_result)
+                    if message_tool_calls is not None and extra_tool_call.raw is not None:
+                        message_tool_calls.append(extra_tool_call.raw)
+                    if not extra_content_added:
+                        content_parts.append(extra_content)
+                        extra_content_added = True
+        content = '\n\n'.join(part for part in content_parts if part)
+        message['content'] = content
+        _logger.info(f"Selected LLM branch: {selected_idx + 1}/{len(response_list)}")
+        self.buffer.append(message)
+        self.buffer.extend(self.parser.format_tool_result_messages(tool_calls, results))
+    
+    def update_best(self, best_record, response_list, results_list):
+        for idx in range(len(response_list)):
+            for act, res in zip(response_list[idx][1], results_list[idx]):
+                if res is None:
+                    continue
+                elif not isinstance(res.result, dict):
+                    continue
+                elif 'metrics' not in res.result:
+                    continue
+                elif 'mse' not in res.result['metrics']:
+                    continue
+                elif (mse := res.result['metrics']['mse']) is None:
+                    continue
+                elif best_record is not None and mse >= best_record['mse']:
+                    continue
+                else:
+                    best_record = {
+                        "formula": res.result.get('formula') or act.params.get('eq'),
+                        "mse": mse,
+                        "rmse": res.result['metrics'].get('rmse'),
+                        "mae": res.result['metrics'].get('mae'),
+                        "r2": res.result['metrics'].get('r2'),
+                    }
+        return best_record
+    
+    def log_info(self, response_list, best_record):
+        # 统计本轮工具调用次数
+        new_count = defaultdict(int)
+        for _, tool_calls, _ in response_list:
+            for tool_call in tool_calls or []:
+                new_count[tool_call.name] += 1
+        tool_calls_str = ', '.join(
+            f"{name}: {count} ({new_count[name]} new)" 
+            for name, count in self.tool_call_counter.named_count.items()
+        )
+        log = {
+            "Best": f"{best_record['formula']} (MSE={best_record['mse']:.6g})" if best_record else "None",
+            "Tool Calls": tool_calls_str,
+            "Speed": self.named_timer.to_str('pace', None, None),
+            "Time Usage": self.named_timer.to_str('time', 'pace', 'by_time'),
+            "Token Usage": self.token_counter.to_str('count', 'speed', 'by_count'),
+            "Price Usage": self.money_counter.to_str('count', 'speed', 'by_count'),
+        }
+        msg = "[gray] | [reset]".join(f"[blue]{k}[reset]={v}" for k, v in log.items())
+        _logger.info(tag2ansi(msg))
 
     def record_llm_result(self, llm_result) -> Dict[str, Any] | None:
         """记录最近一次 LLM 请求的返回值和用量统计。"""
