@@ -1,6 +1,8 @@
 # Copyright (c) 2026-present, Yumeow. Licensed under the MIT License.
 """代码执行工具的测试。"""
 
+import numpy as np
+
 from src.sr_agent.tools.code_executor import CodeExecutorTool
 
 
@@ -47,6 +49,19 @@ print(math.sin(math.pi / 2))
         assert result["success"] is False
         assert "禁止调用函数" in result["error"]
 
+    def test_type_and_hasattr_builtins_are_allowed(self):
+        """测试常用数据探测内置函数可用。"""
+        result = self.tool.execute(
+            """
+value = [1, 2, 3]
+print(type(value).__name__)
+print(hasattr(value, "__len__"))
+"""
+        )
+        assert result["success"] is True
+        assert "list" in result["output"]
+        assert "True" in result["output"]
+
     def test_forbidden_os_module(self):
         """测试禁止导入 os 模块。"""
         result = self.tool.execute('import os')
@@ -64,6 +79,31 @@ print(math.sin(math.pi / 2))
         result = self.tool.execute('import pandas as pd')
         assert result["success"] is False
         assert "未授权的模块" in result["error"]
+
+    def test_scipy_module_is_allowed(self):
+        """测试 scipy 数值计算模块可用。"""
+        result = self.tool.execute(
+            """
+from scipy import stats
+print(f"{stats.pearsonr([1, 2, 3], [1, 2, 4]).statistic:.4f}")
+"""
+        )
+        assert result["success"] is True
+        assert "0.9820" in result["output"]
+
+    def test_traceback_module_is_allowed(self):
+        """测试 traceback 可用于用户代码内部调试。"""
+        result = self.tool.execute(
+            """
+import traceback
+try:
+    1 / 0
+except Exception:
+    print(traceback.format_exc().splitlines()[-1])
+"""
+        )
+        assert result["success"] is True
+        assert "ZeroDivisionError" in result["output"]
 
     def test_syntax_error(self):
         """测试语法错误处理。"""
@@ -98,37 +138,49 @@ print(math.sin(math.pi / 2))
         assert "[output truncated]" in result["output"]
         assert "输出超过限制" in result["error"]
 
-    def test_injected_data_list(self):
-        """测试通过工具上下文注入数据并预置 data_list。"""
-        tool = CodeExecutorTool(sandbox_data=[[1, 2], [3, 4]])
-        result = tool.execute("print(data_list[0])\nprint(len(data))")
-        assert result["success"] is True
-        assert "[1, 2]" in result["output"]
-        assert "2" in result["output"]
-        assert result["injected_data"] is True
-
-    def test_injected_data_stdin_compatible(self):
-        """测试兼容 SR-Scientist 的 sys.stdin 读取模式。"""
-        tool = CodeExecutorTool(sandbox_data=[[1, 2], [3, 4]])
+    def test_context_data_is_available_from_stdin_as_dict(self):
+        """测试工具上下文数据会作为 JSON dict 写入 stdin。"""
+        tool = CodeExecutorTool(
+            sandbox_data={
+                "x1": np.array([1.0, 2.0, 3.0]),
+                "x2": np.array([0.5, 1.5, 2.5]),
+                "y": np.array([0.5, 0.5, 0.5]),
+            }
+        )
         program = """
 import json
 import sys
 
 input_data_str = sys.stdin.read()
-rows = json.loads(input_data_str)
-print(rows[-1])
+data_dict = json.loads(input_data_str)
+print(sorted(data_dict))
+print(data_dict["x1"][0])
+print(data_dict["y"][-1])
 """
         result = tool.execute(program)
         assert result["success"] is True
-        assert "[3, 4]" in result["output"]
+        assert "['x1', 'x2', 'y']" in result["output"]
+        assert "1.0" in result["output"]
+        assert "0.5" in result["output"]
+        assert result["stdin_data"] is True
 
-    def test_injected_data_names_are_protected(self):
-        """测试禁止 LLM 用样例数据覆盖注入数据变量。"""
-        tool = CodeExecutorTool(sandbox_data=[[1, 2], [3, 4]])
-        result = tool.execute("data = {'sample': True}\nprint(data)")
-        assert result["success"] is False
-        assert result["status"] == "security_error"
-        assert "禁止覆盖沙盒注入变量" in result["error"]
+    def test_stdin_loader_can_use_llm_chosen_variable_names(self):
+        """测试 LLM 可以自行命名 stdin 解析后的变量。"""
+        tool = CodeExecutorTool(sandbox_data={"x": [1, 2], "y": [3, 4]})
+        program = """
+import json
+import sys
+
+data_str = sys.stdin.read()
+data_dict = json.loads(data_str)
+data = {"sample": True}
+print(data_dict["y"][-1])
+print(data)
+"""
+        result = tool.execute(program)
+        assert result["success"] is True
+        assert "4" in result["output"]
+        assert "{'sample': True}" in result["output"]
 
     def test_multiple_operations(self):
         """测试复杂计算。"""

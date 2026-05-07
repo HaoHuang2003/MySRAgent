@@ -29,7 +29,6 @@ DEFAULT_MEMORY_LIMIT_MB = 1024
 DEFAULT_OUTPUT_LIMIT_BYTES = 64 * 1024
 MAX_TIMEOUT_SECONDS = 120
 MAX_MEMORY_LIMIT_MB = 4096
-INJECTED_DATA_NAMES = {"data", "data_list", "input_data_str"}
 SANDBOX_INPUT_CONTEXT_KEYS = ("stdin_data", "sandbox_data", "input_data", "data")
 
 SAFE_ENVIRONMENT = {
@@ -60,8 +59,10 @@ ALLOWED_MODULES = {
     "queue",
     "random",
     "re",
+    "scipy",
     "statistics",
     "time",
+    "traceback",
     "typing",
 }
 
@@ -154,6 +155,7 @@ SAFE_BUILTIN_NAMES = {
     "frozenset",
     "hash",
     "hex",
+    "hasattr",
     "int",
     "isinstance",
     "issubclass",
@@ -182,6 +184,7 @@ SAFE_BUILTIN_NAMES = {
     "sum",
     "super",
     "tuple",
+    "type",
     "zip",
 }
 
@@ -292,19 +295,6 @@ def _create_safe_globals() -> Dict[str, Any]:
     }
 
 
-def _build_data_prelude(input_data_str: str) -> str:
-    encoded_input = repr(input_data_str)
-    return (
-        "# === Sandbox injected dataset START ===\n"
-        "import json\n"
-        f"_SANDBOX_INPUT_DATA_STR = {encoded_input}\n"
-        "input_data_str = _SANDBOX_INPUT_DATA_STR\n"
-        "data_list = json.loads(input_data_str)\n"
-        "data = data_list\n"
-        "# === Sandbox injected dataset END ===\n"
-    )
-
-
 def _sandbox_worker(
     program: str,
     stdin_text: str,
@@ -377,11 +367,11 @@ class CodeExecutorTool(BaseTool):
         name="code_executor",
         description=(
             "Execute Python code in a restricted data-analysis sandbox and return "
-            "printed output. If the tool is configured with dataset context, the "
-            "sandbox preloads input_data_str, data_list and data; code may also use "
-            "`import sys; input_data_str = sys.stdin.read(); data_list = "
-            "json.loads(input_data_str)`, matching SR-Scientist's data_analyzer. "
-            "Do not create sample data manually."
+            "printed output. If the tool is configured with dataset context, the data "
+            "is available from stdin as a JSON object mapping variable names to arrays. "
+            "Use `import sys, json; input_data_str = sys.stdin.read(); data_dict = "
+            "json.loads(input_data_str)` to access it. Do not create sample data "
+            "manually."
         ),
         category="computation",
     )
@@ -415,26 +405,19 @@ class CodeExecutorTool(BaseTool):
         )
 
         program = self._extract_code(program)
-        stdin_text, has_injected_data, input_error = self._get_sandbox_input_text()
+        stdin_text, has_stdin_data, input_error = self._get_sandbox_input_text()
         if input_error:
             return self._failure("input_error", input_error)
 
-        protected_names = INJECTED_DATA_NAMES if has_injected_data else set()
-        is_safe, error_msg = self._validate_code(program, protected_names=protected_names)
+        is_safe, error_msg = self._validate_code(program)
         if not is_safe:
             return self._failure("security_error", f"代码安全检查失败：{error_msg}")
-
-        program_to_run = (
-            _build_data_prelude(stdin_text) + program
-            if has_injected_data
-            else program
-        )
 
         result_queue: mp.Queue = mp.Queue(maxsize=1)
         process = mp.Process(
             target=_sandbox_worker,
             args=(
-                program_to_run,
+                program,
                 stdin_text,
                 timeout,
                 memory_limit_mb,
@@ -505,26 +488,17 @@ class CodeExecutorTool(BaseTool):
             "duration": result["duration"],
             "timeout": timeout,
             "memory_limit_mb": memory_limit_mb,
-            "injected_data": has_injected_data,
+            "stdin_data": has_stdin_data,
         }
 
-    def _validate_code(
-        self,
-        code: str,
-        protected_names: set[str] | None = None,
-    ) -> Tuple[bool, str]:
+    def _validate_code(self, code: str) -> Tuple[bool, str]:
         """Validate code before sending it to the sandbox process."""
-        protected_names = protected_names or set()
         try:
             tree = ast.parse(code)
         except SyntaxError as e:
             return False, f"语法错误：{e}"
 
         for node in ast.walk(tree):
-            assigned_name = self._assigned_protected_name(node, protected_names)
-            if assigned_name:
-                return False, f"禁止覆盖沙盒注入变量：{assigned_name}"
-
             if isinstance(node, ast.Call):
                 if isinstance(node.func, ast.Name) and node.func.id in FORBIDDEN_CALLS:
                     return False, f"禁止调用函数：{node.func.id}"
@@ -536,7 +510,7 @@ class CodeExecutorTool(BaseTool):
                     return False, f"禁止访问双下划线名称：{node.id}"
 
             if isinstance(node, ast.Attribute):
-                if node.attr.startswith("__"):
+                if node.attr.startswith("__") and node.attr not in {"__name__"}:
                     return False, f"禁止访问双下划线属性：{node.attr}"
 
             if isinstance(node, ast.Import):
@@ -610,86 +584,6 @@ class CodeExecutorTool(BaseTool):
         if first_line.strip().isalpha():
             return rest_of_code.strip()
         return potential_code.strip()
-
-    @classmethod
-    def _assigned_protected_name(
-        cls,
-        node: ast.AST,
-        protected_names: set[str],
-    ) -> str | None:
-        if not protected_names:
-            return None
-        if cls._is_allowed_data_loader_assignment(node):
-            return None
-
-        targets = []
-        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
-            targets = [node.target] if hasattr(node, "target") else list(node.targets)
-        elif isinstance(node, (ast.For, ast.AsyncFor, ast.With, ast.AsyncWith)):
-            targets = [node.target] if hasattr(node, "target") else []
-        elif isinstance(node, ast.NamedExpr):
-            targets = [node.target]
-
-        for target in targets:
-            assigned_name = cls._find_protected_target(target, protected_names)
-            if assigned_name:
-                return assigned_name
-        return None
-
-    @classmethod
-    def _is_allowed_data_loader_assignment(cls, node: ast.AST) -> bool:
-        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
-            return False
-        target = node.targets[0]
-        if not isinstance(target, ast.Name):
-            return False
-        if target.id == "input_data_str":
-            return cls._is_sys_stdin_read_call(node.value)
-        if target.id == "data_list":
-            return cls._is_json_loads_input_call(node.value)
-        if target.id == "data":
-            return isinstance(node.value, ast.Name) and node.value.id == "data_list"
-        return False
-
-    @staticmethod
-    def _is_sys_stdin_read_call(node: ast.AST) -> bool:
-        return (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "read"
-            and isinstance(node.func.value, ast.Attribute)
-            and node.func.value.attr == "stdin"
-            and isinstance(node.func.value.value, ast.Name)
-            and node.func.value.value.id == "sys"
-        )
-
-    @staticmethod
-    def _is_json_loads_input_call(node: ast.AST) -> bool:
-        return (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "loads"
-            and isinstance(node.func.value, ast.Name)
-            and node.func.value.id == "json"
-            and len(node.args) == 1
-            and isinstance(node.args[0], ast.Name)
-            and node.args[0].id == "input_data_str"
-        )
-
-    @classmethod
-    def _find_protected_target(
-        cls,
-        node: ast.AST,
-        protected_names: set[str],
-    ) -> str | None:
-        if isinstance(node, ast.Name) and node.id in protected_names:
-            return node.id
-        if isinstance(node, (ast.Tuple, ast.List)):
-            for element in node.elts:
-                assigned_name = cls._find_protected_target(element, protected_names)
-                if assigned_name:
-                    return assigned_name
-        return None
 
     @classmethod
     def _to_jsonable(cls, value: Any) -> Any:
