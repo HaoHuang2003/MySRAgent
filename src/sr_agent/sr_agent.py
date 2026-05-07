@@ -224,6 +224,25 @@ class SRAgent(FactoryMixin):
                             selected_mse = result['metrics']['mse']
                 content, tool_calls, message = response_list[selected_idx]
                 results = results_list[selected_idx]
+content_parts = [content]
+                tool_calls = list(tool_calls or [])
+                results = list(results)
+                message_tool_calls = message.get('tool_calls')
+                for results_idx, ((extra_content, extra_tool_calls, _), extra_results) in enumerate(zip(response_list, results_list)):
+                    if results_idx == selected_idx:
+                        continue
+                    extra_content_added = False
+                    for extra_tool_call, extra_result in zip(extra_tool_calls or [], extra_results):
+                        if 'formula' in extra_result:
+                            tool_calls.append(extra_tool_call)
+                            results.append(extra_result)
+                            if message_tool_calls is not None and extra_tool_call.raw is not None:
+                                message_tool_calls.append(extra_tool_call.raw)
+                            if not extra_content_added:
+                                content_parts.append(extra_content)
+                                extra_content_added = True
+                content = '\n\n'.join(part for part in content_parts if part)
+                message['content'] = content
                 _logger.info(f"Selected LLM branch: {selected_idx + 1}/{len(response_list)}")
                 self.buffer.append(message)
                 self.buffer.extend(self.parser.format_tool_result_messages(tool_calls, results))
