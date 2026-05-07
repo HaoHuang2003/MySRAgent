@@ -1,7 +1,6 @@
 # Copyright (c) 2026-present, Yumeow. Licensed under the MIT License.
 """代码执行工具的测试。"""
 
-import pytest
 from src.sr_agent.tools.code_executor import CodeExecutorTool
 
 
@@ -77,6 +76,59 @@ print(math.sin(math.pi / 2))
         result = self.tool.execute('print(1 / 0)')
         assert result["success"] is False
         assert "ZeroDivisionError" in result["error"]
+        assert result["status"] == "runtime_error"
+
+    def test_timeout(self):
+        """测试死循环会被沙盒超时终止。"""
+        result = self.tool.execute("while True:\n    pass", timeout=1)
+        assert result["success"] is False
+        assert result["status"] == "timeout"
+        assert "超时" in result["error"]
+
+    def test_forbidden_dunder_escape(self):
+        """测试禁止通过双下划线属性枚举运行时对象。"""
+        result = self.tool.execute("print((1).__class__)")
+        assert result["success"] is False
+        assert result["status"] == "security_error"
+
+    def test_output_truncation(self):
+        """测试超大输出会被截断而不是撑爆内存。"""
+        result = self.tool.execute('print("x" * 70000)')
+        assert result["success"] is True
+        assert "[output truncated]" in result["output"]
+        assert "输出超过限制" in result["error"]
+
+    def test_injected_data_list(self):
+        """测试通过工具上下文注入数据并预置 data_list。"""
+        tool = CodeExecutorTool(sandbox_data=[[1, 2], [3, 4]])
+        result = tool.execute("print(data_list[0])\nprint(len(data))")
+        assert result["success"] is True
+        assert "[1, 2]" in result["output"]
+        assert "2" in result["output"]
+        assert result["injected_data"] is True
+
+    def test_injected_data_stdin_compatible(self):
+        """测试兼容 SR-Scientist 的 sys.stdin 读取模式。"""
+        tool = CodeExecutorTool(sandbox_data=[[1, 2], [3, 4]])
+        program = """
+import json
+import sys
+
+input_data_str = sys.stdin.read()
+rows = json.loads(input_data_str)
+print(rows[-1])
+"""
+        result = tool.execute(program)
+        assert result["success"] is True
+        assert "[3, 4]" in result["output"]
+
+    def test_injected_data_names_are_protected(self):
+        """测试禁止 LLM 用样例数据覆盖注入数据变量。"""
+        tool = CodeExecutorTool(sandbox_data=[[1, 2], [3, 4]])
+        result = tool.execute("data = {'sample': True}\nprint(data)")
+        assert result["success"] is False
+        assert result["status"] == "security_error"
+        assert "禁止覆盖沙盒注入变量" in result["error"]
 
     def test_multiple_operations(self):
         """测试复杂计算。"""
