@@ -9,6 +9,7 @@ import logging
 import numpy as np
 from pathlib import Path
 from copy import deepcopy
+from itertools import islice
 from collections import defaultdict
 from typing import Any, Dict, List, Optional
 from .api.llm_api import LLMAPI
@@ -42,8 +43,9 @@ class SRAgent(FactoryMixin):
         verbose: bool = False,
         tool_parser: str | BaseParser = 'text',
         save_path: Optional[str] = None,
+        local_sample_size: int = 1,
         max_refinement_depth: int = 20,
-global_width: int = 1,
+        global_width: int = 1,
         max_restart_loop: int = 1,
         restart_top_k: int = 3,
     ):
@@ -56,10 +58,11 @@ global_width: int = 1,
             verbose: 是否启用详细日志（DEBUG 级别）。
             tool_parser: 工具解析器，可以是字符串（'text', 'json'）或 BaseParser 实例。
             save_path: 日志文件保存路径。None 表示不保存到文件。
+            local_sample_size: 每轮生成的候选解数量。
             max_refinement_depth: 最大迭代次数。
-global_width: 每个 restart turn 中独立对话分支数量。
+            global_width: 每个 restart turn 中独立对话分支数量。
             max_restart_loop: best-solution restarts 次数
-restart_top_k: 下一轮 restart prompt 中保留的历史最佳结果数量。
+            restart_top_k: 下一轮 restart prompt 中保留的历史最佳结果数量。
         """
         # 配置日志：如果用户尚未配置，则根据 verbose 和 save_path 自动配置
         setup_logging(info_level='debug' if verbose else 'info', save_path=save_path, force=False)
@@ -68,10 +71,11 @@ restart_top_k: 下一轮 restart prompt 中保留的历史最佳结果数量。
         self.llm_provider = llm_provider
         self.llm_model = llm_model
         self.tool_parser = tool_parser
+        self.local_sample_size = local_sample_size
         self.max_refinement_depth = max_refinement_depth
-self.global_width = global_width
+        self.global_width = global_width
         self.max_restart_loop = max_restart_loop
-self.restart_top_k = restart_top_k
+        self.restart_top_k = restart_top_k
 
         # 关键组件
         self.buffer = []
@@ -187,20 +191,41 @@ self.restart_top_k = restart_top_k
                 _logger.debug(f"Messages:\n" + '\n---\n'.join(logs))
 
                 # Step 2: 请求 LLM 得到 Content 和 Tool Calls
-                for content, tool_calls, message in (llm_result := self.llm_api(prompt, n=1)):
-                    pass
-                self.buffer.append(message)
+                response_list = []
+                for content, tool_calls, message in (llm_result := self.llm_api(prompt, n=self.local_sample_size)):
+                    tmp = render_markdown(content or "(empty)").strip()
+                    tmp = '\n        '.join(['', *tmp.splitlines()]) if '\n' in tmp else tmp
+                    _logger.info(
+                        f"LLM branch: {len(response_list) + 1}/{self.local_sample_size}\n"
+                        f"LLM response content: {tmp}\n"
+                        f"LLM tool calls: {tool_calls or "(None)"}"
+                    )
+                    response_list.append((content, tool_calls, message))
                 self.record_llm_result(llm_result)
-                tmp = render_markdown(content or "(empty)").strip()
-                if '\n' in tmp: tmp = '\n        '.join(['', *tmp.splitlines()])
-                _logger.info(f"LLM response content: {tmp}")
-                _logger.info(f"LLM tool calls: {tool_calls or "(None)"}")
 
                 # Step 3: 执行 Tool Calls 得到 Result
-                results = self.execute_action(tool_calls)
-                _logger.info(f"Action result: {results}")
+                all_tool_calls = []
+                num_tool_calls = []
+                for _, tool_calls, _ in response_list:
+                    all_tool_calls.extend(tool_calls or [])
+                    num_tool_calls.append(len(tool_calls or []))
+                all_results = self.execute_action(all_tool_calls)
+                results_iter = iter(all_results)
+                results_list = [list(islice(results_iter, l)) for l in num_tool_calls]
+                _logger.info(f"Action result: {all_results}")
 
                 # Step 4: 基于 Response Content、Tool Calls 和 Results 更新 Buffer
+                selected_idx = 0
+                selected_mse = float('inf')
+                for results_idx, results in enumerate(results_list):
+                    for result in results:
+                        if 'formula' in result and result['metrics']['mse'] < selected_mse:
+                            selected_idx = results_idx
+                            selected_mse = result['metrics']['mse']
+                content, tool_calls, message = response_list[selected_idx]
+                results = results_list[selected_idx]
+                _logger.info(f"Selected LLM branch: {selected_idx + 1}/{len(response_list)}")
+                self.buffer.append(message)
                 self.buffer.extend(self.parser.format_tool_result_messages(tool_calls, results))
 
                 # 更新最优结果
@@ -228,7 +253,7 @@ self.restart_top_k = restart_top_k
 
                 # 统计本轮工具调用次数
                 new_count = defaultdict(int)
-                for tool_call in tool_calls:
+                for tool_call in all_tool_calls:
                     new_count[tool_call.name] += 1
                 tool_calls_str = ', '.join(
                     f"{name}: {count} ({new_count[name]} new)" 
