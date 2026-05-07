@@ -195,3 +195,16 @@ class EvaluateTool(BaseTool):
         if "formula" in result:
             parts.append(f"Formula={result['formula']}")
         return ", ".join(parts)
+
+
+@BaseTool.register('submit_formula')
+class SubmitFormulaTool(EvaluateTool):
+    """Submit a final formula candidate."""
+
+    metadata = ToolMetadata(
+        name="submit_formula",
+        description=(
+            "Evaluate formula fit quality. If you are satisfied enough with a "
+            "formula, use this tool to submit it."
+        ),
+    )

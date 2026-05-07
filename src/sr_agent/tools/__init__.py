@@ -6,7 +6,7 @@
 
 from .base_tool import BaseTool, ToolMetadata, ToolCallResult
 from .statistics import StatisticsTool
-from .evaluate import EvaluateTool
+from .evaluate import EvaluateTool, SubmitFormulaTool
 from .llm_tool import LLMTool
 from .polynomial_fit import PolynomialFitTool
 from .code_executor import CodeExecutorTool
@@ -18,6 +18,7 @@ __all__ = [
     "ToolCallResult",
     "StatisticsTool",
     "EvaluateTool",
+    "SubmitFormulaTool",
     "LLMTool",
     "PolynomialFitTool",
     "CodeExecutorTool",

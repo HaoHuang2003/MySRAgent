@@ -4,7 +4,8 @@
 import numpy as np
 import pytest
 
-from sr_agent.tools.evaluate import EvaluateTool
+from sr_agent.tools.base_tool import BaseTool
+from sr_agent.tools.evaluate import EvaluateTool, SubmitFormulaTool
 
 
 class TestEvaluateTool:
@@ -134,3 +135,26 @@ class TestEvaluateTool:
 
         assert result["error"] is None
         assert result["metrics"]["r2"] > 0.9
+
+
+class TestSubmitFormulaTool:
+    """测试 SubmitFormulaTool 与 EvaluateTool 的接口一致性。"""
+
+    def test_metadata_emphasizes_submit(self):
+        tool = SubmitFormulaTool(x={"x": np.array([1.0])}, y=np.array([1.0]))
+
+        assert tool.metadata.name == "submit_formula"
+        assert "submit" in tool.metadata.description.lower()
+        assert tool.metadata.parameters == EvaluateTool.metadata.parameters
+
+    def test_execute_matches_evaluate_formula(self):
+        X = {"x1": np.array([1.0, 2.0, 3.0])}
+        y = np.array([3.0, 5.0, 7.0])
+
+        submit_result = SubmitFormulaTool(x=X, y=y).execute("2 * x1 + 1")
+        evaluate_result = EvaluateTool(x=X, y=y).execute("2 * x1 + 1")
+
+        assert submit_result == evaluate_result
+
+    def test_registered_as_base_tool(self):
+        assert BaseTool.create("submit_formula", create_instance=False) is SubmitFormulaTool
