@@ -239,11 +239,13 @@ class SRAgent(FactoryMixin):
         for K, (content, tool_calls, message) in enumerate(llm_result, 1): # K 次重复采样
             response_list.append((content, tool_calls, message))
             content_for_log = render_markdown(content or "(empty)").strip()
+            tool_calls_for_log = '\n'.join(str(tool_call) for tool_call in tool_calls or [])
             content_for_log = '\n        '.join(['', *content_for_log.splitlines()]) if '\n' in content_for_log else content_for_log
+            tool_calls_for_log = '\n        '.join(['', *tool_calls_for_log.splitlines()]) if '\n' in tool_calls_for_log else tool_calls_for_log
             _logger.info(
                 f"Local Sample ({K}/{self.local_sample_size})\n"
                 f"LLM response content: {content_for_log}\n"
-                f"LLM tool calls: {tool_calls or "(None)"}"
+                f"LLM tool calls: {tool_calls_for_log}"
             )
         self.record_llm_result(llm_result)
         return response_list
@@ -258,7 +260,9 @@ class SRAgent(FactoryMixin):
         all_results = self.execute_action(all_tool_calls)
         results_iter = iter(all_results)
         results_list = [list(islice(results_iter, l)) for l in num_tool_calls]
-        _logger.info(f"Action result: {all_results}")
+        all_results_for_log = '\n'.join(str(result) for result in all_results or [])
+        all_results_for_log = '\n        '.join(['', *all_results_for_log.splitlines()]) if '\n' in all_results_for_log else all_results_for_log
+        _logger.info(f"Action result: {all_results_for_log}")
         return results_list
     
     def update_buffer(self, buffer, response_list, results_list):
