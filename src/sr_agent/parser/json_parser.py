@@ -99,12 +99,11 @@ class JSONParser(BaseParser):
 
         try:
             data = json.loads(json_str)
-            if 'actions' in data and isinstance(data['actions'], list):
-                for action in data['actions']:
-                    if (tool_name := action.get('tool', action.get('name'))):
-                        params = action.get('params', action.get('arguments', {}))
-                        tool_calls.append(ToolCall(name=tool_name, params=params, raw_str=json_str))
         except json.JSONDecodeError as e:
             _logger.warning(f"Failed to parse JSON: {e}")
+            return tool_calls
+
+        for action in data["actions"]:
+            tool_calls.append(ToolCall(name=action["tool"], params=action["params"], raw_str=json_str))
 
         return tool_calls
