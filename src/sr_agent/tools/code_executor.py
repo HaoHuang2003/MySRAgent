@@ -354,9 +354,11 @@ class CodeExecutorTool(BaseTool):
         memory_limit_mb: int = DEFAULT_MEMORY_LIMIT_MB,
     ) -> Dict[str, Any]:
         """Execute Python code and return printed output.
-        Use `import sys, json; data_dict = json.loads(sys.stdin.read())` to access data mapping variable names to arrays.
-        Use `print()` to produce output. The code is executed in a restricted sandbox with resource limits.
-        numpy and scipy are available, but libraries like matplotlib, pandas, scikit-learn are not.
+        1) Use `import sys, json; data_dict = json.loads(sys.stdin.read())` to access data mapping variable names to lists.
+        2) Use `print()` to produce output.
+        3) The code is executed in a restricted sandbox with resource limits.
+        4) numpy and scipy are available, but libraries like matplotlib, pandas, scikit-learn are forbidden.
+        5) eval() and exec() are forbidden, but you can define and call your own functions.
 
         Args:
             program: Python code string to execute.

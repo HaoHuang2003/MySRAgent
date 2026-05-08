@@ -3,6 +3,7 @@
 
 评估数学公式对数据的拟合能力，返回多种评价指标。
 """
+import numpy as np
 import nd2py as nd
 from typing import Dict, Any
 from .base_tool import BaseTool, ToolMetadata
@@ -14,37 +15,47 @@ class EvaluateTool(BaseTool):
 
     def execute(
         self,
-        eq: str,
-        y_var: str = None,
+        f: str,
+        y: str = None,
         fit: bool = False,
     ) -> Dict[str, Any]:
         """Evaluate formula fit quality to data.
 
         Args:
-            eq: Formula string, e.g., "x1**2 + sin(x2) + 3.5".
-            y_var: Target variable name. Use target variable by default.
+            f: Formula string, e.g., "x1**2 + sin(x2) + 3.5 * tanh(x3)".
+                Common operators like sin, sinh, sec, sech, and sigmoid are all supported; do not use `numpy` or `np`.
+            y: Target variable name. Use target variable by default.
+                Expressions are also supported, e.g., "log(y)", "y - x1"
             fit: Whether to optimize formula parameters using BFGS algorithm.
         """
         data = self.context['data']
-        y_true = data[y_var or self.context['target']]
-        f = nd.parse(eq.replace("^", "**"))
+        y = y or self.context['target']
+        eq_y = nd.parse(y.replace("^", "**").replace('np.', ''))
+        eq_f = nd.parse(f.replace("^", "**").replace('np.', ''))
+        y_true = eq_y.eval(data)
+
+        variables = [var for var in eq_f.iter_preorder() if isinstance(var, nd.Variable)]
+        for var in variables:
+            if var.name not in data:
+                eq_f = eq_f.replace(var, nd.Number(np.random.rand()))
+                fit = True # If there are unknown variables, we must fit the formula to data.
+        
         if fit:
-            nd.BFGSFit(f).fit(data, y_true)
-        y_pred = f.eval(data)
+            nd.BFGSFit(eq_f).fit(data, y_true)
+
+        y_pred = eq_f.eval(data)
         return {
-            "formula": f.to_str(),
+            "formula": eq_f.to_str(),
             "metrics": self.evaluate(y_pred=y_pred, y_true=y_true),
         }
 
-
 @BaseTool.register('submit_formula')
 class SubmitFormulaTool(EvaluateTool):
-    """Submit a final formula candidate."""
-
     metadata = ToolMetadata(
         name="submit_formula",
         description=(
             "Evaluate formula fit quality to data. "
             "If you are satisfied enough with a formula, use this tool to submit it."
+            "You can submit any formula as many times as you want, but only the best formula will be considered."
         ),
     )

@@ -155,63 +155,55 @@ class SRAgent(FactoryMixin):
                 initial_prompt = self.build_initial_prompt(problem_description, X, y, topk_records)
 
                 for C in range(1, self.global_width + 1):  # C 次独立重复对话
-                    _logger.info(
-                        f"Start Restart Loop (R={R}/{self.max_restart_loop}) - "
-                        f"Global Branch (C={C}/{self.global_width})"
-                    )
+                    _logger.info(f"(R={R}/{self.max_restart_loop}) × Global Branch (C={C}/{self.global_width})")
                 
                     # 用 initial prompt 初始化 buffer
                     buffer = deepcopy(initial_prompt)
 
                     for L in range(1, self.max_refinement_depth + 1):  # L 轮对话迭代
                         _logger.info(
-                            f"Start Restart Loop (R={R}/{self.max_restart_loop}) - "
-                            f"Global Branch (C={C}/{self.global_width}) - "
+                            f"(R={R}/{self.max_restart_loop}) × (C={C}/{self.global_width}) × "
                             f"Refinement Step (L={L}/{self.max_refinement_depth})"
                         )
 
                         # Step 1: 根据 Buffer 创建 Prompt
-                        prompt = self.build_prompt(buffer)
+                        prompt = self.build_prompt(buffer, R=R, L=L, C=C)
 
                         # Step 2: 请求 LLM 得到 (Content, Tool Calls, Message) 元组
-                        response_list = self.request_llm(prompt)
+                        response_list = self.request_llm(prompt, R=R, L=L, C=C)
 
                         # Step 3: 执行 Tool Calls 得到 Results
-                        results_list = self.get_results(response_list)
+                        results_list = self.get_results(response_list, R=R, L=L, C=C)
 
                         # Step 4: 基于 Response Content, Tool Calls, Messages 和 Results 更新 Buffer
-                        buffer = self.update_buffer(buffer, response_list, results_list)
+                        buffer = self.update_buffer(buffer, response_list, results_list, R=R, L=L, C=C)
 
                         # Step 5: 更新 top-k 最优结果
-                        topk_records = self.update_topk(topk_records, response_list, results_list)
+                        topk_records = self.update_topk(topk_records, response_list, results_list, R=R, L=L, C=C)
 
                         # Step 6: 打印本轮日志
-                        self.log_info(response_list, topk_records)
+                        self.log_info(response_list, topk_records, R=R, L=L, C=C)
 
                         if topk_records and topk_records[0][-1]['mse'] == 0.0:
                             raise FitEarlyStop()
 
             _logger.note(f"Finished all iterations. Returning best result.")
             best_record = topk_records[0][-1] if topk_records else {}
-            progress = f'(R={R}/{self.max_restart_loop})x(C={C}/{self.global_width})x(L={L}/{self.max_refinement_depth})x(K={self.local_sample_size})'
-            return {f'best_{k}': v for k, v in best_record.items()} | {'status': 'completed', 'progress': progress}
+            return {f'best_{k}': v for k, v in best_record.items()} | {'status': 'completed', 'progress': self.format_progress(R, L, C)}
         
         except FitEarlyStop as e:
             _logger.note(f"Early stopping triggered by perfect solution. Returning best result.")
             best_record = topk_records[0][-1] if topk_records else {}
-            progress = f'(R={R}/{self.max_restart_loop})x(C={C}/{self.global_width})x(L={L}/{self.max_refinement_depth})x(K={self.local_sample_size})'
-            return {f'best_{k}': v for k, v in best_record.items()} | {'status': 'early_stopped', 'progress': progress}
+            return {f'best_{k}': v for k, v in best_record.items()} | {'status': 'early_stopped', 'progress': self.format_progress(R, L, C)}
 
         except KeyboardInterrupt as e:
             best_record = topk_records[0][-1] if topk_records else {}
-            progress = f'(R={R}/{self.max_restart_loop})x(C={C}/{self.global_width})x(L={L}/{self.max_refinement_depth})x(K={self.local_sample_size})'
-            e.partial_result = {f'best_{k}': v for k, v in best_record.items()} | {'status': 'interrupted', 'progress': progress}
+            e.partial_result = {f'best_{k}': v for k, v in best_record.items()} | {'status': 'interrupted', 'progress': self.format_progress(R, L, C)}
             raise
 
         except Exception as e:
             best_record = topk_records[0][-1] if topk_records else {}
-            progress = f'(R={R}/{self.max_restart_loop})x(C={C}/{self.global_width})x(L={L}/{self.max_refinement_depth})x(K={self.local_sample_size})'
-            e.partial_result = {f'best_{k}': v for k, v in best_record.items()} | {'status': 'failed', 'progress': progress}
+            e.partial_result = {f'best_{k}': v for k, v in best_record.items()} | {'status': 'failed', 'progress': self.format_progress(R, L, C)}
             raise
 
     def build_initial_prompt(self, problem_description, X, y, topk_record):
@@ -235,7 +227,7 @@ class SRAgent(FactoryMixin):
         })
         return initial_prompt
 
-    def build_prompt(self, buffer: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def build_prompt(self, buffer: List[Dict[str, Any]], R: int, L: int, C: int) -> List[Dict[str, Any]]:
         """根据 Buffer 构建 LLM Prompt。"""
         prompt = buffer
         _logger.info(f"Built prompt with {len(prompt)} messages.")
@@ -259,7 +251,7 @@ class SRAgent(FactoryMixin):
         _logger.debug(f"Messages:\n" + '\n---\n'.join(logs))
         return prompt
     
-    def request_llm(self, prompt: List[Dict[str, Any]]):
+    def request_llm(self, prompt: List[Dict[str, Any]], R: int, L: int, C: int):
         """请求 LLM 得到 Content 和 Tool Calls。"""
         response_list = []
         llm_result = self.llm_api(prompt, n=self.local_sample_size)
@@ -270,14 +262,14 @@ class SRAgent(FactoryMixin):
             content_for_log = '\n        '.join(['', *content_for_log.splitlines()]) if '\n' in content_for_log else content_for_log
             tool_calls_for_log = '\n        '.join(['', *tool_calls_for_log.splitlines()]) if '\n' in tool_calls_for_log else tool_calls_for_log
             _logger.info(
-                f"Local Sample (K={K}/{self.local_sample_size})\n"
+                f"{self.format_progress(R, L, C)} × Local Sample (K={K}/{self.local_sample_size})\n"
                 f"LLM response content: {content_for_log}\n"
                 f"LLM tool calls: {tool_calls_for_log}"
             )
         self.record_llm_result(llm_result)
         return response_list
     
-    def get_results(self, response_list):
+    def get_results(self, response_list, R: int, L: int, C: int):
         """执行 Tool Calls 得到 Results。"""
         all_tool_calls = []
         num_tool_calls = []
@@ -292,7 +284,7 @@ class SRAgent(FactoryMixin):
         _logger.info(f"Action result: {all_results_for_log}")
         return results_list
     
-    def update_buffer(self, buffer, response_list, results_list):
+    def update_buffer(self, buffer, response_list, results_list, R: int, L: int, C: int):
         """根据 LLM Response 和 Tool Results 更新 Buffer。"""
         if len(response_list) == 0:
             return buffer
@@ -336,7 +328,7 @@ class SRAgent(FactoryMixin):
         buffer.extend(self.parser.format_tool_result_messages(tool_calls, results))
         return buffer
 
-    def update_topk(self, topk_records, response_list, results_list):
+    def update_topk(self, topk_records, response_list, results_list, R: int, L: int, C: int):
         """根据 LLM Response 和 Tool Results 更新 top-k 最优结果。"""
         for idx in range(len(response_list)):
             for act, res in zip(response_list[idx][1], results_list[idx]):
@@ -365,7 +357,7 @@ class SRAgent(FactoryMixin):
                     heapq.heappush(topk_records, (priority, sequence, record))
         return topk_records
     
-    def log_info(self, response_list, topk_records):
+    def log_info(self, response_list, topk_records, R: int, L: int, C: int):
         """打印本轮日志, response_list 是用来统计本轮新增工具调用次数的。"""
         new_count = defaultdict(int)
         for _, tool_calls, _ in response_list:
@@ -377,6 +369,7 @@ class SRAgent(FactoryMixin):
         )
         best_record = topk_records[0][-1] if topk_records else {}
         log = {
+            "Progress": self.format_progress(R, L, C),
             "Best": f"{best_record['formula']} (MSE={best_record['mse']:.6g})" if best_record else "None",
             "Tool Calls": tool_calls_str,
             "Speed": self.named_timer.to_str('pace', None, None),
@@ -396,7 +389,11 @@ class SRAgent(FactoryMixin):
             self.money_counter.add(name, num)
         if self.save_path is not None:
             with open(Path(self.save_path) / 'response.jsonl', 'a') as f:
-                json.dump(llm_result.returned["responses"], f)
+                json.dump({
+                    **llm_result.returned["responses"],
+                    "progress": self.format_progress(R, L, C),
+                    "usage": usage,
+                }, f)
                 f.write('\n')
 
     def execute_action(self, actions: List[ToolCall]) -> List[ToolCallResult|None]:
@@ -416,4 +413,19 @@ class SRAgent(FactoryMixin):
                 result = tool(**tool_call.params)
                 self.tools_counter.add(tool_call.name)
             results.append(result)
+            if self.save_path is not None:
+                with open(Path(self.save_path) / 'tool_calls.jsonl', 'a') as f:
+                    json.dump({
+                        "progress": self.format_progress(R, L, C),
+                        'name': tool_call.name, 
+                        'params': tool_call.params,
+                        "ok": result.ok, 
+                        "result": result.result, 
+                        "result_str": result.result_str, 
+                        "meta_data": result.meta_data,
+                    }, f)
+                    f.write('\n')
         return results
+
+    def format_progress(self, R: int, L: int, C: int):
+        return f'(R={R}/{self.max_restart_loop}) × (C={C}/{self.global_width}) × (L={L}/{self.max_refinement_depth}) × (K={self.local_sample_size})'

@@ -15,8 +15,8 @@ class PolynomialFitTool(BaseTool):
 
     def execute(
         self,
-        x_vars: List[str] = None,
-        y_var: str = None,
+        x: List[str] = None,
+        y: str = None,
         max_degree: int = 2,
         include_interactions: bool = True,
         interaction_blacklist: List[Tuple[str, str]] = None,
@@ -26,9 +26,10 @@ class PolynomialFitTool(BaseTool):
         """Execute polynomial fit.
 
         Args:
-            x_vars: List of input feature names, e.g., ["x1", "x2"]. Use all features other than y_var by default.
+            x: List of input feature names, e.g., ["x1", "x2"]. Use all features other than y by default.
                 Expressions are also supported, e.g., ["sin(x1)", "(x1-x2)**2"].
-            y_var: Target variable name. Use target variable by default.
+            y: Target variable name. Use target variable by default.
+                Expressions are also supported, e.g., "log(y)", "y - x1"
             max_degree: Maximum polynomial degree.
             include_interactions: Whether to include interaction terms.
             interaction_blacklist: List of variable pairs that should not interact.
@@ -39,36 +40,42 @@ class PolynomialFitTool(BaseTool):
             include_bias: Whether to include bias/intercept term.
         """
         data = self.context["data"]
-        y_var = y_var or self.context['target']
-        x_vars = x_vars or [var for var in data if var != y_var]
-        y = data[y_var].flatten()
-        n = len(y)
-        features = []
+        y = y or self.context["target"]
+        x = x or [var for var in data if var != y]
         exceptions = []
-        for x_var in x_vars:
-            try:
-                feature = nd.parse(x_var)
-                feature_value = feature.eval(data).flatten()
-                assert len(feature_value) == n, f"Variable '{x_var}' length ({len(feature_value)}) does not match target length ({n})."
-                features.append(feature)
-            except Exception as e:
-                exceptions.append(f"Failed to compute '{x_var}': {str(e)}")
 
-        if len(features) == 0:
+        try:
+            eq_y = nd.parse(y.replace('^', '**').replace('np.', ''))
+            data_y = eq_y.eval(data).flatten()
+        except Exception as e:
+            raise ValueError(
+                f"Failed to compute target '{y}': {str(e)}" +
+                "\nOther exceptions: " + "; ".join(exceptions)
+            )
+
+        eq_x_list = []
+        for xi in x:
+            try:
+                eq_x = nd.parse(xi.replace('^', '**').replace('np.', ''))
+                data_x = eq_x.eval(data).flatten()
+                eq_x_list.append(eq_x)
+                assert data_x.shape == data_y.shape, f"Feature '{xi}' shape {data_x.shape} does not match target shape {data_y.shape}."
+            except Exception as e:
+                exceptions.append(f"Failed to compute feature '{xi}': {str(e)}")
+        if len(eq_x_list) == 0:
             raise ValueError(
                 "No valid input variables available for fitting.\n" +
-                "Other exceptions: " +
-                "; ".join(exceptions)
+                "Other exceptions: " + "; ".join(exceptions)
             )
 
         # 生成交叉项限制
         allowed_interactions = self._get_allowed_interactions(
-            features, include_interactions, interaction_blacklist, interaction_whitelist
+            eq_x_list, include_interactions, interaction_blacklist, interaction_whitelist
         )
 
         # 构建总次数不超过 max_degree 的符号项，并统一计算设计矩阵
-        terms = self.generate_terms(features, max_degree, allowed_interactions, include_bias)
-        design_matrix = self._build_design_matrix(data, terms, n)
+        terms = self.generate_terms(eq_x_list, max_degree, allowed_interactions, include_bias)
+        design_matrix = self._build_design_matrix(data, terms, len(data_y))
 
         # 检查设计矩阵的秩
         matrix_rank = np.linalg.matrix_rank(design_matrix)
@@ -82,6 +89,7 @@ class PolynomialFitTool(BaseTool):
 
         # 使用最小二乘法拟合
         p = n_params
+        n = len(data_y)
 
         try:
             # 使用 QR 分解提高数值稳定性
