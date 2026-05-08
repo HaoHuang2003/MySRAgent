@@ -169,9 +169,9 @@ class NamedTimer(Timer):
         elif mode_of_detail == "speed": detail = {k: humanize_speed(self.get_named_speed(k), unit=self.unit) for k in self.names}
         else: raise ValueError(f"Unknown mode_of_detail: {mode_of_detail}. Supported modes are 'pace', 'speed', 'count', and 'time'.")
 
-        if mode_of_percent is None: percent = {k: None for k in self.names}
-        elif mode_of_percent == 'by_time': percent = {k: self.get_named_time(k) / self.time if self.time > 0 else None for k in self.names}
-        elif mode_of_percent == 'by_count': percent = {k: self.get_named_count(k) / self.count if self.count > 0 else None for k in self.names}
+        if mode_of_percent is None: percent = {k: 0 for k in self.names}
+        elif mode_of_percent == 'by_time': percent = {k: self.get_named_time(k) / self.time if self.time > 0 else 0 for k in self.names}
+        elif mode_of_percent == 'by_count': percent = {k: self.get_named_count(k) / self.count if self.count > 0 else 0 for k in self.names}
         else: raise ValueError(f"Unknown mode: {mode_of_percent}. Supported modes are 'by_time' and 'by_count'.")
         
         detail_str = []

@@ -17,7 +17,7 @@ from .api.llm_api import LLMAPI
 from .parser import BaseParser
 from .api.core import ToolCall
 from .tools import BaseTool, ToolCallResult
-from .utils import FactoryMixin, ParallelTimer, NamedTimer
+from .utils import FactoryMixin, ParallelTimer, NamedTimer, Timer
 from .utils.logger import setup_logging
 from .utils import render_python, render_markdown, tag2ansi
 
@@ -87,7 +87,8 @@ class SRAgent(FactoryMixin):
         self.llm_api = None # 延迟实例化, 因为需要 tools 工具列表
 
         # 附属组件
-        self.named_timer = NamedTimer() # 用时统计
+        self.total_timer = Timer() # 总用时统计
+        self.named_timer = NamedTimer() # 细粒度用时统计
         self.token_counter = ParallelTimer(unit='token') # token 统计
         self.money_counter = ParallelTimer(unit='$') # 费用统计
         self.tools_counter = ParallelTimer(unit='call') # 工具调用统计
@@ -147,18 +148,22 @@ class SRAgent(FactoryMixin):
         ## 开始迭代
         topk_records = []
         R = C = L = None
+        self.total_timer.clear(reset_last_add_time=True)
+        self.named_timer.clear(reset_last_add_time=True)
         try:
             for R in range(1, self.max_restart_loop + 1):  # R 次 best-solution restart
                 _logger.info(f"Start Restart Loop (R={R}/{self.max_restart_loop})")
 
                 # 用平凡结果或者历史最佳结果构建新的 initial prompt
                 initial_prompt = self.build_initial_prompt(problem_description, X, y, topk_records)
+                self.named_timer.add('build_initial_prompt')
 
                 for C in range(1, self.global_width + 1):  # C 次独立重复对话
                     _logger.info(f"(R={R}/{self.max_restart_loop}) × Global Branch (C={C}/{self.global_width})")
                 
                     # 用 initial prompt 初始化 buffer
                     buffer = deepcopy(initial_prompt)
+                    self.named_timer.add('init_buffer')
 
                     for L in range(1, self.max_refinement_depth + 1):  # L 轮对话迭代
                         _logger.info(
@@ -168,21 +173,28 @@ class SRAgent(FactoryMixin):
 
                         # Step 1: 根据 Buffer 创建 Prompt
                         prompt = self.build_prompt(buffer, R=R, L=L, C=C)
+                        self.named_timer.add('build_prompt')
 
                         # Step 2: 请求 LLM 得到 (Content, Tool Calls, Message) 元组
                         response_list = self.request_llm(prompt, R=R, L=L, C=C)
+                        self.named_timer.add('request_llm')
 
                         # Step 3: 执行 Tool Calls 得到 Results
                         results_list = self.get_results(response_list, R=R, L=L, C=C)
+                        self.named_timer.add('get_results')
 
                         # Step 4: 基于 Response Content, Tool Calls, Messages 和 Results 更新 Buffer
                         buffer = self.update_buffer(buffer, response_list, results_list, R=R, L=L, C=C)
+                        self.named_timer.add('update_buffer')
 
                         # Step 5: 更新 top-k 最优结果
                         topk_records = self.update_topk(topk_records, response_list, results_list, R=R, L=L, C=C)
+                        self.named_timer.add('update_topk')
 
                         # Step 6: 打印本轮日志
                         self.log_info(response_list, topk_records, R=R, L=L, C=C)
+                        self.named_timer.add('log_info')
+                        self.total_timer.add()
 
                         if topk_records and topk_records[0][-1]['mse'] == 0.0:
                             raise FitEarlyStop()
@@ -262,7 +274,7 @@ class SRAgent(FactoryMixin):
             content_for_log = '\n        '.join(['', *content_for_log.splitlines()]) if '\n' in content_for_log else content_for_log
             tool_calls_for_log = '\n        '.join(['', *tool_calls_for_log.splitlines()]) if '\n' in tool_calls_for_log else tool_calls_for_log
             _logger.info(
-                f"{self.format_progress(R, L, C)} × Local Sample (K={K}/{self.local_sample_size})\n"
+                f"(R={R}/{self.max_restart_loop}) × (C={C}/{self.global_width}) × (L={L}/{self.max_refinement_depth}) × Local Sample (K={K}/{self.local_sample_size})\n"
                 f"LLM response content: {content_for_log}\n"
                 f"LLM tool calls: {tool_calls_for_log}"
             )
@@ -284,7 +296,7 @@ class SRAgent(FactoryMixin):
         _logger.info(f"Action result: {all_results_for_log}")
         return results_list
     
-    def update_buffer(self, buffer, response_list, results_list, R: int, L: int, C: int): # TODO: 此函数逻辑较复杂，尚未经过充分的人工审核
+    def update_buffer(self, buffer, response_list, results_list, R: int, L: int, C: int):
         """根据 LLM Response 和 Tool Results 更新 Buffer。"""
         # 如果没有成功的回复，跳过本轮更新
         if len(response_list) == 0:
@@ -354,7 +366,7 @@ class SRAgent(FactoryMixin):
             "Progress": self.format_progress(R, L, C),
             "Best": f"{best_record['formula']} (MSE={best_record['mse']:.6g})" if best_record else "None",
             "Tool Calls": tool_calls_str,
-            "Speed": self.named_timer.to_str('pace', None, None),
+            "Speed": self.total_timer.to_str('pace'),
             "Time Usage": self.named_timer.to_str('time', 'pace', 'by_time'),
             "Token Usage": self.token_counter.to_str('count', 'speed', 'by_count'),
             "Price Usage": self.money_counter.to_str('count', 'speed', 'by_count'),
