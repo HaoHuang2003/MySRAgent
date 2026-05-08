@@ -84,6 +84,36 @@ FORBIDDEN_CALLS = {
     "vars",
 }
 
+MATH_EVAL_FUNCTIONS = {
+    "abs",
+    "acos",
+    "asin",
+    "atan",
+    "atan2",
+    "ceil",
+    "cos",
+    "cosh",
+    "exp",
+    "fabs",
+    "floor",
+    "log",
+    "log10",
+    "log2",
+    "max",
+    "min",
+    "pow",
+    "round",
+    "sin",
+    "sinh",
+    "sqrt",
+    "tan",
+    "tanh",
+}
+
+MATH_EVAL_MODULES = {"math", "np", "numpy"}
+
+MATH_EVAL_CONSTANTS = {"e", "pi", "tau", "inf", "nan"}
+
 FORBIDDEN_MODULES = {
     "configparser",
     "ctypes",
@@ -214,6 +244,128 @@ def _root_module_name(module_name: str) -> str:
     return module_name.split(".", 1)[0]
 
 
+def _validate_math_eval_expression_source(expression: str) -> Tuple[bool, str]:
+    try:
+        expr_tree = ast.parse(expression, mode="eval")
+    except SyntaxError as e:
+        return False, f"eval 数学表达式语法错误：{e}"
+    return _validate_math_eval_expression_tree(expr_tree)
+
+
+def _validate_math_eval_expression_tree(tree: ast.AST) -> Tuple[bool, str]:
+    parent_by_child = {
+        child: parent
+        for parent in ast.walk(tree)
+        for child in ast.iter_child_nodes(parent)
+    }
+    allowed_nodes = (
+        ast.Expression,
+        ast.BinOp,
+        ast.UnaryOp,
+        ast.Call,
+        ast.Name,
+        ast.Load,
+        ast.Constant,
+        ast.Attribute,
+        ast.Add,
+        ast.Sub,
+        ast.Mult,
+        ast.Div,
+        ast.FloorDiv,
+        ast.Mod,
+        ast.Pow,
+        ast.USub,
+        ast.UAdd,
+    )
+
+    for node in ast.walk(tree):
+        if not isinstance(node, allowed_nodes):
+            return False, f"禁止的表达式节点：{type(node).__name__}"
+
+        if isinstance(node, ast.Call):
+            is_allowed, error_msg = _validate_math_eval_expression_call(node)
+            if not is_allowed:
+                return False, error_msg
+
+        if isinstance(node, ast.Constant):
+            if not isinstance(node.value, (int, float, complex)):
+                return False, f"禁止的常量类型：{type(node.value).__name__}"
+
+        if isinstance(node, ast.Name):
+            if node.id in {"eval", "exec"}:
+                return False, f"禁止嵌套调用：{node.id}"
+            if node.id.startswith("__"):
+                return False, f"禁止访问双下划线名称：{node.id}"
+            parent = parent_by_child.get(node)
+            is_module_attr_base = (
+                isinstance(parent, ast.Attribute)
+                and parent.value is node
+                and node.id in MATH_EVAL_MODULES
+            )
+            if is_module_attr_base:
+                continue
+            if node.id in MATH_EVAL_MODULES | ALLOWED_MODULES | FORBIDDEN_MODULES:
+                return False, f"禁止直接访问模块：{node.id}"
+            if node.id in SAFE_BUILTIN_NAMES and node.id not in MATH_EVAL_FUNCTIONS | MATH_EVAL_CONSTANTS:
+                return False, f"禁止访问非数学内置名称：{node.id}"
+
+        if isinstance(node, ast.Attribute):
+            if node.attr.startswith("__"):
+                return False, f"禁止访问双下划线属性：{node.attr}"
+            if not (
+                isinstance(node.value, ast.Name)
+                and node.value.id in MATH_EVAL_MODULES
+                and node.attr in MATH_EVAL_FUNCTIONS | MATH_EVAL_CONSTANTS
+            ):
+                return False, f"禁止访问属性：{ast.unparse(node)}"
+
+    return True, ""
+
+
+def _validate_math_eval_expression_call(node: ast.Call) -> Tuple[bool, str]:
+    if node.keywords:
+        return False, "禁止 eval 数学表达式中的关键字参数"
+
+    if isinstance(node.func, ast.Name):
+        if node.func.id in {"eval", "exec"}:
+            return False, f"禁止嵌套调用：{node.func.id}"
+        if node.func.id not in MATH_EVAL_FUNCTIONS:
+            return False, f"禁止调用函数：{node.func.id}"
+        return True, ""
+
+    if isinstance(node.func, ast.Attribute):
+        if (
+            isinstance(node.func.value, ast.Name)
+            and node.func.value.id in MATH_EVAL_MODULES
+            and node.func.attr in MATH_EVAL_FUNCTIONS
+        ):
+            return True, ""
+        return False, f"禁止调用方法：{ast.unparse(node.func)}"
+
+    return False, "禁止动态函数调用"
+
+
+def _safe_math_eval(expression: str, globals=None, locals=None) -> Any:
+    if not isinstance(expression, str):
+        raise TypeError("eval 只能用于字符串数学表达式")
+    is_allowed, error_msg = _validate_math_eval_expression_source(expression)
+    if not is_allowed:
+        raise ValueError(f"eval 数学表达式不安全：{error_msg}")
+
+    env: Dict[str, Any] = {}
+    if globals is None and locals is None:
+        frame = sys._getframe(1)
+        env.update(frame.f_globals)
+        env.update(frame.f_locals)
+    else:
+        if globals:
+            env.update(globals)
+        if locals:
+            env.update(locals)
+
+    return builtins.eval(compile(expression, "<safe-math-eval>", "eval"), {"__builtins__": {}}, env)
+
+
 _SANDBOX_STDIN_TEXT = ""
 _SANDBOX_FAKE_SYS: ModuleType | None = None
 
@@ -288,6 +440,7 @@ def _current_address_space_bytes() -> int:
 def _create_safe_globals() -> Dict[str, Any]:
     safe_builtins = {name: getattr(builtins, name) for name in SAFE_BUILTIN_NAMES}
     safe_builtins["__import__"] = _limited_import
+    safe_builtins["eval"] = _safe_math_eval
     return {
         "__builtins__": safe_builtins,
         "__name__": "__sandbox__",
@@ -358,7 +511,8 @@ class CodeExecutorTool(BaseTool):
         2) Use `print()` to produce output.
         3) The code is executed in a restricted sandbox with resource limits.
         4) numpy and scipy are available, but libraries like matplotlib, pandas, scikit-learn are forbidden.
-        5) eval() and exec() are forbidden, but you can define and call your own functions.
+        5) exec() is forbidden. eval() is allowed only for math expression strings that
+           pass a strict AST whitelist; otherwise define and call your own functions.
 
         Args:
             program: Python code string to execute.
@@ -472,14 +626,33 @@ class CodeExecutorTool(BaseTool):
         except SyntaxError as e:
             return False, f"语法错误：{e}"
 
+        parent_by_child = {
+            child: parent
+            for parent in ast.walk(tree)
+            for child in ast.iter_child_nodes(parent)
+        }
+
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
+                if isinstance(node.func, ast.Name) and node.func.id == "eval":
+                    is_allowed, error_msg = self._validate_math_eval_call(node)
+                    if not is_allowed:
+                        return False, error_msg
+                    continue
                 if isinstance(node.func, ast.Name) and node.func.id in FORBIDDEN_CALLS:
                     return False, f"禁止调用函数：{node.func.id}"
                 if isinstance(node.func, ast.Attribute) and node.func.attr in FORBIDDEN_CALLS:
                     return False, f"禁止调用方法：{node.func.attr}"
 
             if isinstance(node, ast.Name):
+                parent = parent_by_child.get(node)
+                is_direct_eval_call = (
+                    node.id == "eval"
+                    and isinstance(parent, ast.Call)
+                    and parent.func is node
+                )
+                if node.id == "eval" and not is_direct_eval_call:
+                    return False, "eval 只能直接调用静态字符串数学表达式"
                 if node.id.startswith("__") and node.id not in {"__name__"}:
                     return False, f"禁止访问双下划线名称：{node.id}"
 
@@ -502,6 +675,26 @@ class CodeExecutorTool(BaseTool):
                         return False, error_msg
 
         return True, ""
+
+    def _validate_math_eval_call(self, node: ast.Call) -> Tuple[bool, str]:
+        """Allow direct eval(); runtime wrapper validates dynamic math strings."""
+        if not node.args:
+            return False, "禁止调用函数：eval"
+        if len(node.args) > 3:
+            return False, "eval 只能用于数学表达式"
+
+        expr_arg = node.args[0]
+        if isinstance(expr_arg, ast.Constant) and isinstance(expr_arg.value, str):
+            is_allowed, error_msg = _validate_math_eval_expression_source(expr_arg.value)
+            if not is_allowed:
+                return False, f"eval 数学表达式不安全：{error_msg}"
+        return True, ""
+
+    def _validate_math_expression_tree(self, tree: ast.AST) -> Tuple[bool, str]:
+        return _validate_math_eval_expression_tree(tree)
+
+    def _validate_math_expression_call(self, node: ast.Call) -> Tuple[bool, str]:
+        return _validate_math_eval_expression_call(node)
 
     def _validate_import(self, module_name: str) -> Tuple[bool, str]:
         root = _root_module_name(module_name)

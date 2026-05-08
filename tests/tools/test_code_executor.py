@@ -43,11 +43,77 @@ print(math.sin(math.pi / 2))
         assert result["success"] is True
         assert "4.0" in result["output"]
 
-    def test_forbidden_eval(self):
-        """测试禁止 eval 调用。"""
-        result = self.tool.execute('eval("1+1")')
+    def test_math_eval_literal_is_allowed(self):
+        """测试允许安全的字面量数学表达式 eval。"""
+        result = self.tool.execute(
+            """
+import math
+x1 = 2.0
+x2 = 0.5
+print(eval("x1 + sin(x2)", {"__builtins__": {}}, {"x1": x1, "x2": x2, "sin": math.sin}))
+"""
+        )
+        assert result["success"] is True
+        assert result["error"] == ""
+
+    def test_numpy_math_eval_literal_is_allowed(self):
+        """测试允许 numpy 白名单数学函数 eval。"""
+        result = self.tool.execute(
+            """
+import numpy as np
+x1 = np.array([1.0, 2.0])
+x2 = np.array([3.0, 4.0])
+print(eval("x1 + np.sin(x2)", {"__builtins__": {}}, {"x1": x1, "x2": x2, "np": np}))
+"""
+        )
+        assert result["success"] is True
+        assert result["error"] == ""
+
+    def test_dynamic_math_eval_is_allowed(self):
+        """测试动态字符串 eval 会在运行时执行数学表达式校验。"""
+        result = self.tool.execute('expr = "1+1"\nprint(eval(expr))')
+        assert result["success"] is True
+        assert "2" in result["output"]
+
+    def test_dynamic_unsafe_eval_is_forbidden_at_runtime(self):
+        """测试动态危险 eval 表达式会在运行时被拒绝。"""
+        result = self.tool.execute('expr = "__import__(\'os\')"\nprint(eval(expr))')
         assert result["success"] is False
-        assert "禁止调用函数" in result["error"]
+        assert "eval 数学表达式不安全" in result["error"]
+
+    def test_indirect_eval_is_forbidden(self):
+        """测试禁止把 eval 赋值后间接调用。"""
+        result = self.tool.execute('e = eval\nprint(e("1+1"))')
+        assert result["success"] is False
+        assert "eval 只能直接调用静态字符串数学表达式" in result["error"]
+
+    def test_nested_eval_is_forbidden(self):
+        """测试 eval 字符串内部禁止嵌套 eval。"""
+        result = self.tool.execute("""eval("eval('1+1')")""")
+        assert result["success"] is False
+        assert "禁止嵌套调用：eval" in result["error"]
+
+    def test_nested_exec_is_forbidden(self):
+        """测试 eval 字符串内部禁止嵌套 exec。"""
+        result = self.tool.execute("""eval("exec('x=1')")""")
+        assert result["success"] is False
+        assert "禁止嵌套调用：exec" in result["error"]
+
+    def test_eval_dunder_escape_is_forbidden(self):
+        """测试 eval 字符串内部禁止对象模型逃逸。"""
+        result = self.tool.execute("""eval("().__class__")""")
+        assert result["success"] is False
+        assert "禁止的表达式节点" in result["error"] or "禁止访问双下划线属性" in result["error"]
+
+    def test_eval_non_math_expression_is_forbidden(self):
+        """测试 eval 字符串内部只允许算术表达式。"""
+        result = self.tool.execute("""eval("x1 > 0", {"__builtins__": {}}, {"x1": 1})""")
+        assert result["success"] is False
+        assert "禁止的表达式节点：Compare" in result["error"]
+
+        result = self.tool.execute("""eval("'not math'")""")
+        assert result["success"] is False
+        assert "禁止的常量类型：str" in result["error"]
 
     def test_type_and_hasattr_builtins_are_allowed(self):
         """测试常用数据探测内置函数可用。"""
