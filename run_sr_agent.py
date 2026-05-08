@@ -44,7 +44,7 @@ def build_argparser() -> argparse.ArgumentParser: # 这个函数已经经过人�
     parser.add_argument("--noise_std_ratio", type=float, default=0.0, help="Gaussian noise standard deviation added to the target.")
     parser.add_argument("--llm_provider", default="openrouter", help="LLM provider name.")
     parser.add_argument("--llm_model", default="qwen/qwen3.5-flash-02-23", help="LLM model name.")
-    parser.add_argument("--tools", default=None, type=str, nargs='+', help="Optional list of tools to use. Default is all built-in tools.")
+    parser.add_argument("--tools", default=BaseTool.all_registered_names, type=str, nargs='+', help="Optional list of tools to use. Default is all built-in tools.")
     parser.add_argument("--local_sample_size", type=int, default=2, help="Number of LLM samples to generate for each branch.")
     parser.add_argument("--max_refinement_depth", type=int, default=5, help="Maximum agent refinement depth.")
     parser.add_argument("--global_width", type=int, default=2, help="Number of independent branches per restart loop.")

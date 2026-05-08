@@ -1,11 +1,23 @@
 # Copyright (c) 2024-present, Yumeow. Licensed under the MIT License.
 from __future__ import annotations
+from abc import ABCMeta
 from typing import Dict, Type, TypeVar
 
 T = TypeVar('T', bound='FactoryMixin')
 
+class FactoryMeta(ABCMeta):
+    @property
+    def all_registered_classes(cls) -> List[Type]:
+        """Return the registry of all registered classes."""
+        return list(cls.REGISTRY_DICT.values())
+    
+    @property
+    def all_registered_names(cls) -> List[str]:
+        """Return the registry of all registered class names."""
+        return list(cls.REGISTRY_DICT.keys())
 
-class FactoryMixin:
+
+class FactoryMixin(metaclass=FactoryMeta):
     """
     Mixin class that provides factory pattern capabilities for any class.
 
