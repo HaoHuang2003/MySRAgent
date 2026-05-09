@@ -9,22 +9,6 @@
 - **参数拟合**：支持 BFGS 算法自动优化公式中的参数
 - **可扩展架构**：易于添加新的分析工具和 LLM 接口
 
-## 项目结构
-
-```
-├── src/sr_agent/
-│   ├── tools/          # 工具定义
-│   │   ├── base_tool.py
-│   │   ├── statistics.py
-│   │   └── evaluate.py
-│   ├── api/            # LLM 接口
-│   ├── prompts/        # Prompt 模板
-│   └── formulas/       # 公式处理
-├── tests/              # 单元测试
-├── _deps/              # 第三方依赖源码
-└── playground/         # 实验性代码
-```
-
 ## 安装
 
 1. 创建虚拟环境：
@@ -36,21 +20,54 @@ conda activate ./venv  # Unix/Linux/MacOS
 
 2. 安装依赖：
 ```bash
-# 激活环境后安装本项目及依赖
 pip install -e ".[dev]"
 ```
 
-3. 安装第三方依赖（目前只有 nd2py）：
+3. 配置环境变量：
 ```bash
-git clone git@github.com:yuzhTHU/nd2py.git src/_deps/nd2py
-pip install -e src/_deps/nd2py
+cp .env.sample .env
+# 编辑 .env，填入你的 API 密钥
 ```
 
 ## 运行测试
 
+详见 [`tests/README.md`](tests/README.md)。
+
 ```bash
 python -m pytest tests/ -v
 ```
+
+## 项目结构
+
+```
+├── src/sr_agent/       # 核心代码，详见 src/sr_agent/README.md
+│   ├── tools/          # 工具定义，详见 src/sr_agent/tools/README.md
+│   ├── api/            # LLM 接口
+│   ├── parser/         # 工具调用解析器
+│   ├── prompts/        # Prompt 模板
+│   ├── buffer/         # 消息管理
+│   ├── skills/         # 技能文档
+│   └── utils/          # 工具函数
+├── src/llmsr_bench/    # LLM-SRBench 对接代码
+├── tests/              # 单元测试，详见 tests/README.md
+├── scripts/            # 临时性脚本和数据分析脚本
+├── analysis/           # 数据分析 notebook
+├── data/               # 数据文件
+├── logs/               # 运行结果日志
+└── playground/         # 实验性/临时代码
+```
+
+### 目录约定
+
+- **根目录**只放具有明确功能的入口脚本（如 `run_sr_agent.py`、`bench_sr_agent.py`），避免根目录过于杂乱。
+- **`scripts/`** 放临时性脚本和数据分析脚本，运行时需指定 `PYTHONPATH`：
+  ```bash
+  export PYTHONPATH=. && python ./scripts/xxx.py
+  ```
+- **`analysis/`** 放数据分析 notebook，命名格式为 `YYMMDD_xxx.ipynb`。注意控制 notebook 文件大小，避免撑爆 git 仓库。
+- **`data/`** 放数据文件（已加入 `.gitignore`，不会被 git 跟踪）。
+- **`logs/`** 放运行结果（已加入 `.gitignore`）。
+- **`playground/`** 放不舍得删但代码中用不到的东西（已加入 `.gitignore`）。
 
 ## 许可证
 
