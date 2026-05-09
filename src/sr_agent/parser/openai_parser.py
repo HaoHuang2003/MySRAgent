@@ -18,13 +18,13 @@ class OpenAIParser(BaseParser):
     """基于 OpenAI 格式的工具调用解析器。"""
 
     def format_tools(self) -> str:
-        raise NotImplementedError("OpenAIParser.format_tools() is not implemented yet.")
+        raise ValueError("OpenAIParser.format_tools() should not be called.")
 
     def parse_response(self, response: str) -> List[ToolCall]:
-        raise NotImplementedError("OpenAIParser.parse_response() is not implemented yet.")
+        raise ValueError("OpenAIParser.parse_response() should not be called.")
 
     def format_tool_calls(self, tool_calls: List[ToolCall]) -> str:
-        pass # 不需要这个方法
+        raise ValueError("OpenAIParser.format_tool_calls() should not be called.")
 
     def format_tool_result_messages(
         self,
