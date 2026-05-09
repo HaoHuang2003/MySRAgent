@@ -61,7 +61,7 @@ class TestTextParserLLMIntegration:
                     pytest.fail(f"Failed after {max_retries + 1} attempts: {e}")
         return None, None
 
-    @pytest.mark.slow
+    @pytest.mark.paid
     @pytest.mark.parametrize("task_description,expected_tool", [
         ("Calculate the mean, variance, and standard deviation of the data.", "statistics_analysis"),
         ("Evaluate how well the formula x**2 + 1 fits the data.", "evaluate_formula"),
@@ -101,7 +101,7 @@ For the parameters:
         assert len(actions) >= 1, f"No actions parsed from response: {response}"
         assert actions[0].name == expected_tool, f"Expected {expected_tool}, got {actions[0].name}"
 
-    @pytest.mark.slow
+    @pytest.mark.paid
     def test_llm_handles_multiple_sequential_actions(self, parser, tool_formats):
         """测试 LLM 能生成多个顺序执行的动作。"""
         prompt = f"""You are a helpful assistant that uses tools to complete tasks.
@@ -125,7 +125,7 @@ Make two tool calls, one per line.
         # 应该有至少一个动作（某些模型可能只生成一个）
         assert len(actions) >= 1, f"No actions parsed from response: {response}"
 
-    @pytest.mark.slow
+    @pytest.mark.paid
     def test_llm_with_detailed_parameter_instructions(self, parser, tool_formats):
         """测试带有详细参数设置说明的情况下 LLM 的表现。"""
         prompt = f"""You are a helpful assistant that uses tools to complete tasks.
@@ -158,7 +158,7 @@ Use the format: Action: tool_name(param1=value1, param2=value2)
             assert params.get("max_degree") == 3, f"max_degree should be 3, got {params.get('max_degree')}"
             assert params.get("include_interactions") is False, f"include_interactions should be False"
 
-    @pytest.mark.slow
+    @pytest.mark.paid
     def test_llm_with_formula_evaluation(self, parser, tool_formats):
         """测试 LLM 评估公式时的参数处理。"""
         prompt = f"""You are a helpful assistant that uses tools to complete tasks.
@@ -188,7 +188,7 @@ Use the format: Action: tool_name(param1=value1, param2=value2)
             assert "x1" in eq.lower() or "x**2" in eq, f"Formula should contain x1: {eq}"
             assert params.get("fit") is True, f"fit should be True"
 
-    @pytest.mark.slow
+    @pytest.mark.paid
     def test_llm_repeated_calls_consistency(self, parser, tool_formats):
         """测试多次调用 LLM 的一致性。
 
@@ -220,7 +220,7 @@ Use the format: Action: tool_name(param1=value1, param2=value2)
             assert actions[0].name == "statistics_analysis", \
                 f"Attempt {i+1}: Expected statistics_analysis, got {actions[0].name}"
 
-    @pytest.mark.slow
+    @pytest.mark.paid
     def test_llm_with_code_executor(self, parser, tool_formats):
         """测试 LLM 使用代码执行工具。"""
         prompt = f"""You are a helpful assistant that uses tools to complete tasks.
