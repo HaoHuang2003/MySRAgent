@@ -7,6 +7,7 @@ from ast import literal_eval
 from logging import getLogger
 from typing import List, Dict, Any, Tuple
 from .base_parser import BaseParser
+from ..api.core import ToolCall
 from ..tools import BaseTool
 
 _logger = getLogger(f'sr_agent.{__name__}')
@@ -67,27 +68,23 @@ class JSONParser(BaseParser):
         lines.append("Respond with a JSON object in the following format:")
         lines.append("")
         lines.append("```json")
-        lines.append("{")
-        lines.append('  "actions": [')
-        lines.append('    {"tool": "tool_name", "params": {"param1": "value1", "param2": "value2"}}')
-        lines.append('  ]')
-        lines.append("}")
+        lines.append('{"tool": "tool_name", "params": {"param1": "value1", "param2": "value2"}}')
         lines.append("```")
         lines.append("")
-        lines.append("You can include multiple actions in the actions array.")
+        lines.append("You can include multiple tool call blocks in one response if needed.")
 
         return "\n".join(lines)
 
-    def parse_response(self, response: str) -> List[Tuple[str, Dict[str, Any]]]:
+    def parse_response(self, response: str) -> List[ToolCall]:
         """从 LLM 响应中解析工具调用。
 
         Args:
             response: LLM 的原始响应文本。
 
         Returns:
-            工具调用列表，每个元素为 (tool_name, params) 元组。
+            工具调用列表。
         """
-        actions = []
+        tool_calls = []
 
         # 尝试从响应中提取 JSON
         if (json_match := re.search(r'```(?:json)?\s*({.*?})\s*```', response, re.DOTALL)):
@@ -98,12 +95,26 @@ class JSONParser(BaseParser):
 
         try:
             data = json.loads(json_str)
-            if 'actions' in data and isinstance(data['actions'], list):
-                for action in data['actions']:
-                    if (tool_name := action.get('tool', action.get('name'))):
-                        params = action.get('params', action.get('arguments', {}))
-                        actions.append((tool_name, params))
         except json.JSONDecodeError as e:
             _logger.warning(f"Failed to parse JSON: {e}")
+            return tool_calls
 
-        return actions
+        for action in data["actions"]:
+            tool_calls.append(ToolCall(name=action["tool"], params=action["params"], raw_str=json_str))
+
+        return tool_calls
+
+    def format_tool_calls(self, tool_calls: List[ToolCall]) -> str:
+        """将工具调用列表格式化为 JSON 字符串。
+
+        Args:
+            tool_calls: 工具调用列表。
+
+        Returns:
+            格式化后的 JSON 字符串。
+        """
+        lines = []
+        for call in tool_calls:
+            action = {"tool": call.name, "params": call.params}
+            lines.append("```json\n" + json.dumps(action) + "\n```")
+        return "\n".join(lines)

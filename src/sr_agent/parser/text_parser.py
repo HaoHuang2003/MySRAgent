@@ -7,6 +7,7 @@ from ast import literal_eval
 from logging import getLogger
 from typing import List, Dict, Any, Tuple
 from .base_parser import BaseParser
+from ..api.core import ToolCall
 from ..tools import BaseTool
 
 _logger = getLogger(f'sr_agent.{__name__}')
@@ -80,16 +81,16 @@ class TextParser(BaseParser):
 
         return "\n".join(lines)
 
-    def parse_response(self, response: str) -> List[Tuple[str, Dict[str, Any]]]:
+    def parse_response(self, response: str) -> List[ToolCall]:
         """从 LLM 响应中解析工具调用。
 
         Args:
             response: LLM 的原始响应文本。
 
         Returns:
-            工具调用列表，每个元素为 (tool_name, params) 元组。
+            工具调用列表。
         """
-        actions = []
+        tool_calls = []
         for line in response.strip().splitlines():
             line = line.strip()
             if line.startswith('Action:'):
@@ -100,10 +101,25 @@ class TextParser(BaseParser):
                         params = self._parse_params(params_str)
                     else:
                         params = {}
-                    actions.append((tool_name, params))
+                    tool_calls.append(ToolCall(name=tool_name, params=params, raw_str=line))
                 else:
                     _logger.warning(f"Failed to parse action line: '{line}'")
-        return actions
+        return tool_calls
+
+    def format_tool_calls(self, tool_calls: List[ToolCall]) -> str:
+        """将工具调用列表格式化为字符串，供 LLM 参考。
+
+        Args:
+            tool_calls: 工具调用列表。
+
+        Returns:
+            格式化后的工具调用字符串。
+        """
+        lines = []
+        for tool_call in tool_calls:
+            params_str = ', '.join(f"{k}={v!r}" for k, v in tool_call.params.items())
+            lines.append(f"Action: {tool_call.name}({params_str})")
+        return "\n".join(lines)
 
     def _parse_params(self, params_str: str) -> Dict[str, Any]:
         """解析参数字符串为字典。

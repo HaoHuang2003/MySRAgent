@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Literal
 from .base_tool import BaseTool, ToolMetadata
 
-
+# @BaseTool.register('skill_document') # 不注册这个工具，因为它用处不大
 class SkillDocumentTool(BaseTool):
     """Browse and read Skill documentation files.
 
@@ -34,7 +34,6 @@ class SkillDocumentTool(BaseTool):
     metadata = ToolMetadata(
         name="skill_document",
         description="Browse Skill documentation. Use 'list' operation to see available skills and their file structures, 'read' operation to get specific guidance from a skill document. Skills contain expert knowledge, best practices, and formula patterns for symbolic regression.",
-        category="knowledge",
     )
 
     # Skill 文件夹的基础路径

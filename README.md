@@ -2,51 +2,66 @@
 
 符号回归（Symbolic Regression）Agent，通过 LLM 调用工具分析数据并发现数学公式。
 
-## 功能特点
+## 安装
 
-- **数据探索**：自动计算数据的统计特征，帮助理解数据分布
-- **公式评估**：使用 nd2py 符号引擎评估公式拟合能力，返回 MSE、R² 等指标
-- **参数拟合**：支持 BFGS 算法自动优化公式中的参数
-- **可扩展架构**：易于添加新的分析工具和 LLM 接口
+1. 安装依赖（参见 `install.sh`）
+2. 设置 .env 文件（示例见 `.env.example`）：
+  ```bash
+  if [ ! -f .env ]; then
+    cp .env.example .env
+  fi
+  # 编辑 .env 文件，填入实际的 API Key 等信息
+  ```
+3. 运行测试：
+  ```bash
+  python -m pytest tests/ -v
+  ```
+4. 运行示例：
+  ```bash
+  python run_sr_agent.py \
+      -f "y = sin(x1 - x2)" \
+      --x-low -10 \
+      --x-high 10 \
+      --llm-provider openrouter \
+      --llm-model qwen/qwen3.5-flash-02-23
+  ```
 
 ## 项目结构
 
 ```
-├── src/sr_agent/
-│   ├── tools/          # 工具定义
-│   │   ├── base_tool.py
-│   │   ├── statistics.py
-│   │   └── evaluate.py
+├── src/sr_agent/       # 核心代码，详见 `src/sr_agent/README.md`
+│   ├── tools/          # 工具定义，详见 `src/sr_agent/tools/README.md`
 │   ├── api/            # LLM 接口
-│   ├── prompts/        # Prompt 模板
-│   └── formulas/       # 公式处理
-├── tests/              # 单元测试
-├── _deps/              # 第三方依赖源码
-└── playground/         # 实验性代码
+│   ├── parser/         # 工具调用解析器
+│   ├── prompts/        # Prompt 模板（暂时用不到）
+│   ├── buffer/         # 消息管理（暂时用不到）
+│   ├── skills/         # 技能文档（暂时用不到）
+│   └── utils/          # 工具函数
+├── src/llmsr_bench/    # LLM-SRBench 对接代码
+├── tests/              # 单元测试，详见 tests/README.md
+├── scripts/            # 临时性脚本和数据分析脚本
+├── analysis/           # 数据分析 notebook
+├── data/               # 数据文件
+├── logs/               # 运行结果日志
+└── playground/         # 实验性/临时代码
 ```
 
-## 安装
+## 目录约定
 
-1. 创建虚拟环境：
-```bash
-conda create -p ./venv python=3.12 -y
-conda activate ./venv  # Unix/Linux/MacOS
-./venv/Scripts/activate  # Windows
-```
+- **根目录**只放具有明确功能的入口脚本（如 `run_sr_agent.py`、`bench_sr_agent.py`），避免根目录过于杂乱。
+- **`scripts/`** 放临时性脚本和数据分析脚本，运行时需指定 `PYTHONPATH`：
+  ```bash
+  export PYTHONPATH=. && python ./scripts/xxx.py
+  ```
+- **`analysis/`** 放数据分析 notebook，命名格式为 `YYMMDD_xxx.ipynb`。注意控制 notebook 文件大小，避免撑爆 git 仓库。
+- **`data/`** 放数据文件（已加入 `.gitignore`）。
+- **`logs/`** 放运行结果（已加入 `.gitignore`）。
+- **`playground/`** 放不舍得删但代码中用不到的东西（已加入 `.gitignore`）。
 
-2. 安装依赖：
-```bash
-# 激活环境后安装本项目及依赖
-pip install -e ".[dev]"
-```
 
-3. 安装第三方依赖（目前只有 nd2py）：
-```bash
-git clone git@github.com:yuzhTHU/nd2py.git src/_deps/nd2py
-pip install -e src/_deps/nd2py
-```
+## 开发测试
 
-## 运行测试
+详见 [`tests/README.md`](tests/README.md)。
 
 ```bash
 python -m pytest tests/ -v
