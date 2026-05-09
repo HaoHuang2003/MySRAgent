@@ -37,7 +37,7 @@ from socket import gethostname
 from typing import Any, Callable, Dict, List, Optional
 from scipy.stats import kendalltau
 from sklearn.metrics import mean_absolute_percentage_error
-from src.sr_agent.utils import setup_logging, log_exception, tag2ansi, seed_all
+from src.sr_agent.utils import setup_logging, log_exception, tag2ansi, seed_all, add_minus_flags, add_negation_flags
 from run_sr_agent import build_argparser as build_sragent_argparser, sanitize_filename, save_args
 from src.llmsr_bench.core import SEDTask, SRResult, Problem
 from src.llmsr_bench.algorithms import get_update_parser, get_algorithm, list_algorithms
@@ -59,7 +59,7 @@ def build_argparser() -> argparse.ArgumentParser:
         description="LLM-SRBench Evaluation Script.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("algorithm", nargs="?", default="my_sr_agent", choices=list_algorithms(), help="符号回归算法名称")
+    parser.add_argument("--algorithm", default="my_sr_agent", choices=list_algorithms(), help="符号回归算法名称")
     parser.add_argument("--name", default=f"{SCRIPT_NAME}", help="Experiment task name used when auto-generating exp_name.")
     parser.add_argument("--exp_name", default=None, help="Experiment name. Defaults to a timestamped name.")
     parser.add_argument("--save_dir", default=f"./logs/{SCRIPT_NAME}", help="Root directory for logs and run artifacts.")
@@ -75,6 +75,8 @@ def build_argparser() -> argparse.ArgumentParser:
     args, _ = parser.parse_known_args()
     if (update_parser_fn := get_update_parser(args.algorithm)):
         parser = update_parser_fn(parser)
+    add_minus_flags(parser)
+    add_negation_flags(parser)
     return parser
 
 
@@ -145,8 +147,9 @@ def compute_metrics(y_pred: np.ndarray, y_true: np.ndarray) -> Dict[str, float]:
         r2 = float(1 - nmse)
         kdt = float(kendalltau(y_true, y_pred)[0]) if len(y_true) > 1 else float("nan")
         mape = float(mean_absolute_percentage_error(y_true, y_pred))
+        acc01 = np.mean(np.abs(y_true - y_pred) <= 0.1 * np.abs(y_true))
         return {
-            "mse": mse, "nmse": nmse, "r2": r2,
+            "mse": mse, "nmse": nmse, "r2": r2, "acc01": acc01,
             "kdt": kdt, "mape": mape, "num_valid_points": len(y_true),
         }
 
@@ -171,8 +174,18 @@ def evaluate_problem(args, problem: Problem, sr_fn: Callable) -> Dict:
         y_ood = problem.ood_test_samples[:, 0]
         ood_metrics = compute_metrics(y_pred=result.predict(X_ood), y_true=y_ood)
 
+    # Symbolic Accurate
+    try:
+        eq1 = sympy.sympify(result.expression)
+        eq2 = sympy.sympify(problem.expression)
+        diff = sympy.simplify(eq1 - eq2)
+        symbolic_acc = True if diff == 0 else False
+    except:
+        symbolic_acc = False
+
     return {
         "equation_id": problem.equation_idx,
+        "dataset_identifier": problem.dataset_identifier,
         "gt_expression": problem.expression,
         "discovered_expression": result.expression,
         "num_train": len(problem.train_samples),
@@ -180,7 +193,39 @@ def evaluate_problem(args, problem: Problem, sr_fn: Callable) -> Dict:
         "search_time": search_time,
         "id_metrics": id_metrics,
         "ood_metrics": ood_metrics,
+        "symbolic_acc": symbolic_acc
     }
+
+
+def log_result(result: Dict):
+    lines = []
+    lines.append(f'[gray]{"=" * 50}')
+    lines.append(f"[blue bold]Problem {result['equation_id']} @ {result.get('dataset_identifier', 'Unknown')} evaluated.[reset]")
+    lines.append(f'[gray]{"-" * 50}')
+    lines.append(f"[blue]GT: [green]{result['gt_expression']}[reset]")
+    lines.append(f"[blue]Discovered: [red]{result['discovered_expression']}[reset]")
+    lines.append(f"[blue]Symbolic Accurate:[reset] {'[green]Yes[reset]' if result['symbolic_acc'] else '[red]No[reset]'}")
+    if 'id_metrics' in result and result['id_metrics'] is not None:
+        lines.append(
+            f"[blue]In-Domain: R2={result['id_metrics']['r2']:.6f}, "
+            f"MSE={result['id_metrics']['mse']:.6f}, "
+            f"NMSE={result['id_metrics']['nmse']:.6f}, "
+            f"MAPE={result['id_metrics']['mape']:.6f}, "
+            f"Acc@0.1={result['id_metrics']['acc01']:.6f}, "
+            f"Valid Points={result['id_metrics']['num_valid_points']}"
+        )
+    if 'ood_metrics' in result and result['ood_metrics'] is not None:
+        lines.append(
+            f"[blue]Out-of-Domain: R2={result['ood_metrics']['r2']:.6f}, "
+            f"MSE={result['ood_metrics']['mse']:.6f}, "
+            f"NMSE={result['ood_metrics']['nmse']:.6f}, "
+            f"MAPE={result['ood_metrics']['mape']:.6f}, "
+            f"Acc@0.1={result['ood_metrics']['acc01']:.6f}, "
+            f"Valid Points={result['ood_metrics']['num_valid_points']}"
+        )
+    lines.append(f"[blue]Search time:[reset] {result['search_time']:.2f}s")
+    lines.append(f'[gray]{"=" * 50}')
+    return tag2ansi("\n".join(lines))
 
 
 def aggregate_results(results: List[Dict]) -> Dict:
@@ -203,12 +248,14 @@ def aggregate_results(results: List[Dict]) -> Dict:
         "dataset": results[0].get("equation_id", "").split("_")[0] if results else "",
         "total_problems": n,
         "avg_search_time": float(np.mean([r["search_time"] for r in results])),
+        "avg_symbolic_acc": float(np.mean([r["symbolic_acc"] for r in results])),
         "r2_hit_rates": r2_hit_rates,
     }
     summary["id_metrics"] = {
         "avg_mse": safe_mean("mse", "id_metrics"),
         "avg_nmse": safe_mean("nmse", "id_metrics"),
         "avg_r2": safe_mean("r2", "id_metrics"),
+        "avg_acc01": safe_mean("acc01", "id_metrics"),
         "avg_kdt": safe_mean("kdt", "id_metrics"),
         "avg_mape": safe_mean("mape", "id_metrics"),
         "avg_num_valid_points": safe_mean("num_valid_points", "id_metrics"),
@@ -218,6 +265,7 @@ def aggregate_results(results: List[Dict]) -> Dict:
             "avg_mse": safe_mean("mse", "ood_metrics"),
             "avg_nmse": safe_mean("nmse", "ood_metrics"),
             "avg_r2": safe_mean("r2", "ood_metrics"),
+            "avg_acc01": safe_mean("acc01", "ood_metrics"),
             "avg_kdt": safe_mean("kdt", "ood_metrics"),
             "avg_mape": safe_mean("mape", "ood_metrics"),
             "avg_num_valid_points": safe_mean("num_valid_points", "ood_metrics"),
@@ -241,21 +289,31 @@ def conclude_results(llmsr_datasets: List[str], save_path: str):
         f'[gray]{"=" * 50}[reset]',
         f"[red bold]Summary of {'|'.join(llmsr_datasets)} ({summary['total_problems']} problems)[reset]",
         f'[gray]{"-" * 50}[reset]',
-        f"  [red]Avg search time:[reset] {summary['avg_search_time']:.2f}s",
         f"  [red]Avg R2   (In-Domain):[reset] {summary['id_metrics']['avg_r2']:.6f}",
+        f"  [red]Avg MSE  (In-Domain):[reset] {summary['id_metrics']['avg_mse']:.6f}",
         f"  [red]Avg NMSE (In-Domain):[reset] {summary['id_metrics']['avg_nmse']:.6f}",
         f"  [red]Avg MAPE (In-Domain):[reset] {summary['id_metrics']['avg_mape']:.6f}",
+        f"  [red]Avg KDT  (In-Domain):[reset] {summary['id_metrics']['avg_kdt']:.6f}",
+        f"  [red]Avg Acc@0.1 (In-Domain):[reset] {summary['id_metrics']['avg_acc01']:.6f}",
+        f"  [red]Avg Valid Points (In-Domain):[reset] {summary['id_metrics']['avg_num_valid_points']:.1f}",
     ])
     if "ood_metrics" in summary:
         lines.extend([
             f'[gray]{"-" * 50}[reset]',
             f"  [red]Avg R2   (Out-of-Domain):[reset] {summary['ood_metrics']['avg_r2']:.6f}",
+            f"  [red]Avg MSE  (Out-of-Domain):[reset] {summary['ood_metrics']['avg_mse']:.6f}",
             f"  [red]Avg NMSE (Out-of-Domain):[reset] {summary['ood_metrics']['avg_nmse']:.6f}",
             f"  [red]Avg MAPE (Out-of-Domain):[reset] {summary['ood_metrics']['avg_mape']:.6f}",
+            f"  [red]Avg KDT  (Out-of-Domain):[reset] {summary['ood_metrics']['avg_kdt']:.6f}",
+            f"  [red]Avg Acc@0.1 (Out-of-Domain):[reset] {summary['ood_metrics']['avg_acc01']:.6f}",
+            f"  [red]Avg Valid Points (Out-of-Domain):[reset] {summary['ood_metrics']['avg_num_valid_points']:.1f}",
         ])
     lines.append(f'[gray]{"-" * 50}[reset]')
     for thr, info in summary["r2_hit_rates"].items():
         lines.append(f"  [red]{thr:>10}:[reset] {info['count']:>5}/{summary['total_problems']} ({info['rate']:.1%})")
+    lines.append(f'[gray]{"-" * 50}[reset]')
+    lines.append(f"  [red]Avg Search Time:[reset] {summary['avg_search_time']:.2f}s")
+    lines.append(f"  [red]Avg Symbolic Accurate Rate:[reset] {summary['avg_symbolic_acc']:.6f}")
     lines.append(f'[gray]{"=" * 50}[reset]')
     _logger.note(tag2ansi("\n" + "\n".join(lines)))
 
@@ -292,16 +350,19 @@ def main(args: argparse.Namespace) -> dict:
         exp_path = Path(args.save_path) / "results" / f"{problem.dataset_identifier}_{problem.equation_idx}.jsonl"
         exp_path.parent.mkdir(parents=True, exist_ok=True)
         if exp_path.exists() and args.skip_existing:
-            _logger.note(f"Result already exists at {exp_path}, skipping...")
+            lines = [json.loads(line) for line in exp_path.read_text(encoding="utf-8").strip().splitlines()]
+            n = len(lines)
+            m = sum(1 for line in lines if 'error' not in line)
+            result = lines[-1] if m == 0 else [line for line in reversed(lines) if 'error' not in line][0]
+            _logger.info(tag2ansi(
+                f"Result already exists at {exp_path} ([red bold]{n} records with [red bold]{m} successful), skipping...\n"
+                f"Last result:\n{log_result(result)}"
+            ))
             continue
+
         try:
             result = evaluate_problem(args, problem, sr_fn)
-            _logger.note(
-                f"R2={result["id_metrics"]['r2']:.6f}, "
-                f"NMSE={result["id_metrics"]['nmse']:.6f}, "
-                f"MAPE={result["id_metrics"]['mape']:.6f}, "
-                f"Time={result['search_time']:.2f}s"
-            )
+            _logger.note(f"\n{log_result(result)}")
             with open(exp_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(result, default=str, allow_nan=True) + "\n")
             _logger.note(f"Result saved to {exp_path}")
