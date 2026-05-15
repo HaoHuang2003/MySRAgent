@@ -17,9 +17,9 @@ import nd2py as nd
 from pathlib import Path
 from datetime import datetime
 from socket import gethostname
-from src.sr_agent import SRAgent
-from src.sr_agent.tools import BaseTool
-from src.sr_agent.utils import setup_logging, add_minus_flags, add_negation_flags, seed_all, log_exception, tag2ansi
+from sr_agent import SRAgent
+from sr_agent.tools import BaseTool
+from sr_agent.utils import setup_logging, add_minus_flags, add_negation_flags, seed_all, log_exception, tag2ansi
 
 
 SCRIPT_NAME = Path(__file__).stem  # run_sr_agent

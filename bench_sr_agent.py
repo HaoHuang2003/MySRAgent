@@ -37,10 +37,10 @@ from socket import gethostname
 from typing import Any, Callable, Dict, List, Optional
 from scipy.stats import kendalltau
 from sklearn.metrics import mean_absolute_percentage_error
-from src.sr_agent.utils import setup_logging, log_exception, tag2ansi, seed_all, add_minus_flags, add_negation_flags
+from sr_agent.utils import setup_logging, log_exception, tag2ansi, seed_all, add_minus_flags, add_negation_flags
 from run_sr_agent import build_argparser as build_sragent_argparser, sanitize_filename, save_args
-from src.llmsr_bench.core import SEDTask, SRResult, Problem
-from src.llmsr_bench.algorithms import get_update_parser, get_algorithm, list_algorithms
+from sr_agent._vendor.llmsr_bench.core import SEDTask, SRResult, Problem
+from sr_agent._vendor.llmsr_bench.algorithms import get_update_parser, get_algorithm, list_algorithms
 
 DATASET_SPLITS = {
     "lsrtransform": "lsr_transform",

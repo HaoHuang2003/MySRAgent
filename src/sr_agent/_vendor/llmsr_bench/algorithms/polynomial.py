@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import argparse
 import numpy as np
+import nd2py as nd
 from typing import TYPE_CHECKING
-from src.llmsr_bench.core import SEDTask, SRResult
+from sr_agent.tools import PolynomialFitTool
+from sr_agent._vendor.llmsr_bench.core import SEDTask, SRResult
 
 
 def update_parser(parser):
@@ -31,10 +33,6 @@ def run(args: argparse.Namespace, task: SEDTask) -> SRResult:
     - predict: Callable[[np.ndarray], np.ndarray] — 输入 X, shape=(n, n_input_vars); 输出 y, shape=(n,)
     - expression: Optional[str]                   — 发现的公式字符串 (可选, 用于记录)
     """
-    from src.llmsr_bench.core import SRResult
-    from src.sr_agent.tools import PolynomialFitTool
-    import nd2py as nd
-
     # 构建数据字典: {变量名: 数据数组}
     target = task.symbols[0]
     features = task.symbols[1:]

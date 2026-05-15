@@ -3,7 +3,7 @@
 
 import numpy as np
 
-from src.sr_agent.tools.code_executor import CodeExecutorTool
+from sr_agent.tools.code_executor import CodeExecutorTool
 
 
 class TestCodeExecutorTool:

@@ -36,8 +36,9 @@
 │   ├── prompts/        # Prompt 模板（暂时用不到）
 │   ├── buffer/         # 消息管理（暂时用不到）
 │   ├── skills/         # 技能文档（暂时用不到）
-│   └── utils/          # 工具函数
-├── src/llmsr_bench/    # LLM-SRBench 对接代码
+│   ├── utils/          # 工具函数
+│   └── _vendor/        # 无法通过 pip 安装的第三方库
+│       └── llmsr_bench/ # LLM-SRBench 对接代码
 ├── tests/              # 单元测试，详见 tests/README.md
 ├── scripts/            # 临时性脚本和数据分析脚本
 ├── analysis/           # 数据分析 notebook

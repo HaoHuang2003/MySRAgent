@@ -1,6 +1,6 @@
 from typing import List, Dict
 from logging import getLogger
-from ..utils.factory import FactoryMixin
+from ..utils import FactoryMixin
 
 _logger = getLogger(f'sr_agent.{__name__}')
 

@@ -11,10 +11,10 @@ from pathlib import Path
 from logging import getLogger
 from datetime import datetime
 from typing import TYPE_CHECKING
-from src.sr_agent import SRAgent
-from src.sr_agent.tools import BaseTool
-from src.llmsr_bench.core import SEDTask, SRResult
-from src.sr_agent.utils import log_exception, tag2ansi
+from sr_agent import SRAgent
+from sr_agent.tools import BaseTool
+from sr_agent.utils import log_exception, tag2ansi
+from sr_agent._vendor.llmsr_bench.core import SEDTask, SRResult
 
 _logger = getLogger(f'sr_agent.{__name__}')
 

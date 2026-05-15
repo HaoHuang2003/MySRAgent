@@ -5,8 +5,8 @@
 
 import pytest
 from dotenv import load_dotenv
-from src.sr_agent.parser import TextParser
-from src.sr_agent.tools import BaseTool, LLMTool
+from sr_agent.parser import TextParser
+from sr_agent.tools import BaseTool, LLMTool
 
 # 加载环境变量
 load_dotenv()
@@ -47,10 +47,10 @@ class TestTextParserLLMIntegration:
                     messages=[{"role": "user", "content": prompt}]
                 )
 
-                if not result.get("success"):
+                if not result.ok:
                     pytest.skip(f"LLM API call failed: {result.get('error')}")
 
-                response = result.get("message", "")
+                response = result.get("content", "")
 
                 # 解析响应
                 actions = parser.parse_response(response)
