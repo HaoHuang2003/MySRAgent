@@ -5,11 +5,12 @@
 使用 Julia 后端的 SymbolicRegression.jl 进化搜索简洁的数学表达式。
 """
 import re
+import logging
 import numpy as np
+import nd2py as nd
 from typing import Dict, Any, List
 from .base_tool import BaseTool, ToolMetadata
 
-import logging
 _logger = logging.getLogger(f'sr_agent.{__name__}')
 
 DEFAULT_TIMEOUT = 30
@@ -31,29 +32,59 @@ class PySRTool(BaseTool):
         max_samples: int = 500,
     ) -> Dict[str, Any]:
         """Run PySR (genetic programming symbolic regression) to evolve mathematical expressions that fit the data.
-        PySR uses Julia-based SymbolicRegression.jl to perform evolutionary search for symbolic formulas.
+        PySR perform evolutionary search for symbolic formulas.
         It is powerful for discovering complex nonlinear relationships including trigonometric, exponential, sqrt, and nested functions.
+        However, it is also computationally intensive and requires careful tuning of operators and variables to find good formulas within reasonable time.
         You MUST specify the binary and unary operators based on your hypothesis about the data.
 
         Args:
             binary_operators: List of binary operators for PySR to use. Choose from: "+", "-", "*", "/", "^". Select operators you believe are relevant to the underlying formula.
             unary_operators: List of unary operators for PySR to use. Choose from: "sin", "cos", "exp", "log", "sqrt", "square", "abs", "tanh", "sign". Select operators based on your hypothesis about the data.
             x: List of input feature names to use. If not specified, all features except target are used.
+                Expressions are also supported, e.g., ["sin(x1)", "(x1-x2)**2"].
             y: Target variable name. If not specified, the default target variable is used.
+                Expressions are also supported, e.g., "log(y)", "y - x1"
             timeout: Maximum search time in seconds (default 30, max 120). Increase for harder problems.
             maxsize: Maximum expression complexity in number of nodes (10-40). Larger allows more complex formulas.
             max_samples: Maximum number of data samples to use for fitting (for speed). Data is subsampled if larger.
         """
         data = self.context["data"]
-        y_name = y or self.context["target"]
-        x_names = x or [var for var in data if var != y_name]
+        y = y or self.context["target"]
+        x = x or [var for var in data if var != y]
         exceptions = []
 
         # Clamp timeout
         timeout = max(10, min(timeout, MAX_TIMEOUT))
 
-        X_matrix = np.column_stack([data[name] for name in x_names])
-        y_vec = data[y_name].flatten()
+        try:
+            eq_y = nd.parse(y.replace('^', '**').replace('np.', ''))
+            data_y = eq_y.eval(data).flatten()
+        except Exception as e:
+            raise ValueError(
+                f"Failed to compute target '{y}': {str(e)}" +
+                "\nOther exceptions: " + "; ".join(exceptions)
+            )
+        y_vec = data_y
+
+        eq_x_list = []
+        data_x_list = []
+        x_names = []
+        for idx, xi in enumerate(x, 1):
+            try:
+                eq_x = nd.parse(xi.replace('^', '**').replace('np.', ''))
+                data_x = eq_x.eval(data).flatten()
+                eq_x_list.append(eq_x)
+                data_x_list.append(data_x)
+                x_names.append(f"x{idx}")
+                assert data_x.shape == data_y.shape, f"Feature '{xi}' shape {data_x.shape} does not match target shape {data_y.shape}."
+            except Exception as e:
+                exceptions.append(f"Failed to compute feature '{xi}': {str(e)}")
+        if len(eq_x_list) == 0:
+            raise ValueError(
+                "No valid input variables available for fitting.\n" +
+                "Other exceptions: " + "; ".join(exceptions)
+            )
+        X_matrix = np.column_stack(data_x_list)
 
         # Subsample if too many points
         if len(y_vec) > max_samples:
@@ -68,12 +99,14 @@ class PySRTool(BaseTool):
         formula_str = "0"
         pareto_front = []
         complexity = 0
+        method = None
 
         try:
             formula_str, pareto_front, complexity = self._run_pysr(
                 X_fit, y_fit, x_names, binary_operators, unary_operators,
                 timeout, maxsize
             )
+            method = "PySR"
         except Exception as e:
             exceptions.append(f"PySR failed: {type(e).__name__}: {e}")
             _logger.warning(f"PySR failed, trying gplearn fallback: {e}")
@@ -81,17 +114,19 @@ class PySRTool(BaseTool):
                 formula_str = self._run_gplearn_fallback(
                     X_fit, y_fit, x_names, binary_operators, unary_operators
                 )
+                method = "gplearn"
             except Exception as e2:
                 exceptions.append(f"gplearn fallback also failed: {type(e2).__name__}: {e2}")
+                method = "failed"
 
         if formula_str and formula_str != "0":
-            try:
-                metrics = self.evaluate(eq=formula_str)
-                is_candidate = (y_name == self.context['target']) and (y_name not in (x or []))
-            except Exception as e:
-                metrics = {"mse": float("inf")}
-                is_candidate = False
-                exceptions.append(f"Formula evaluation failed: {e}")
+            formula_str = self._restore_feature_names(formula_str, x_names, x)
+            pareto_front = [
+                item | {"formula": self._restore_feature_names(item["formula"], x_names, x)}
+                for item in pareto_front
+            ]
+            metrics = self.evaluate(eq=formula_str)
+            is_candidate = (y == self.context['target']) and (y not in x)
         else:
             metrics = {"mse": float("inf")}
             is_candidate = False
@@ -100,7 +135,7 @@ class PySRTool(BaseTool):
             "formula": formula_str,
             "metrics": metrics,
             "is_candidate": is_candidate,
-            "method": "PySR (SymbolicRegression.jl)" if not any("gplearn" in e for e in exceptions) else "gplearn (fallback)",
+            "method": method,
             "complexity": complexity,
             "pareto_front": pareto_front[:5] if pareto_front else [],
             "config": {
@@ -207,6 +242,23 @@ class PySRTool(BaseTool):
         formula = re.sub(r'\bsquare\(([^)]+)\)', r'(\1)**2', formula)
         formula = formula.replace("^", "**")
         return formula if formula else "0"
+
+    def _restore_feature_names(
+        self,
+        formula: str,
+        internal_names: List[str],
+        original_expressions: List[str],
+    ) -> str:
+        """Replace PySR feature names with original variables or expressions."""
+        restored = formula
+        replacements = dict(zip(internal_names, original_expressions))
+        placeholders = {name: f"__pysr_feature_{idx}__" for idx, name in enumerate(replacements)}
+        for name in sorted(replacements, key=len, reverse=True):
+            restored = re.sub(rf"\b{re.escape(name)}\b", placeholders[name], restored)
+        for name, expr in replacements.items():
+            expr = expr.replace("^", "**").replace("np.", "")
+            restored = restored.replace(placeholders[name], f"({expr})")
+        return restored
 
     def _clean_gplearn_formula(self, formula: str) -> str:
         """Clean gplearn output for nd2py compatibility."""

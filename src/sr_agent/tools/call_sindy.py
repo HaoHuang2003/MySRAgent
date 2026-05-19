@@ -5,11 +5,13 @@
 通过将目标变量 y 视为状态变量 X 的"导数"，利用 SINDy 的稀疏回归框架
 发现 y = f(X) 的简洁数学表达式。
 """
+import re
+import logging
 import numpy as np
+import nd2py as nd
 from typing import Dict, Any, List
 from .base_tool import BaseTool, ToolMetadata
 
-import logging
 _logger = logging.getLogger(f'sr_agent.{__name__}')
 
 
@@ -24,6 +26,7 @@ class SINDyTool(BaseTool):
         poly_degree: int = 3,
         include_trig: bool = False,
         threshold: float = 0.1,
+        max_samples: int = 5000,
     ) -> Dict[str, Any]:
         """Run SINDy (Sparse Identification of Nonlinear Dynamics) to discover symbolic expressions from data.
         SINDy builds a library of candidate nonlinear functions and uses sparse regression (STLSQ) to find
@@ -32,57 +35,73 @@ class SINDyTool(BaseTool):
 
         Args:
             x: List of input feature names to use. If not specified, all features except target are used.
+                Expressions are also supported, e.g., ["sin(x1)", "(x1-x2)**2"].
             y: Target variable name. If not specified, the default target variable is used.
+                Expressions are also supported, e.g., "log(y)", "y - x1"
             poly_degree: Maximum polynomial degree for the feature library (1-5). Higher values find more complex relationships but are slower.
             include_trig: Whether to include sin/cos terms in the feature library. Enable this if you suspect trigonometric relationships.
             threshold: Sparsity threshold for STLSQ optimizer (0.01-1.0). Larger values produce sparser (simpler) formulas.
+            max_samples: Maximum number of data samples to use for fitting (for speed). Data is subsampled if larger.
         """
-        import pysindy as ps
-
         data = self.context["data"]
-        y_name = y or self.context["target"]
-        x_names = x or [var for var in data if var != y_name]
+        y = y or self.context["target"]
+        x = x or [var for var in data if var != y]
         exceptions = []
 
-        X_matrix = np.column_stack([data[name] for name in x_names])
-        y_vec = data[y_name].flatten()
-
-        # Build feature library
-        feature_libs = [ps.PolynomialLibrary(degree=poly_degree, include_interaction=True)]
-        if include_trig:
-            feature_libs.append(ps.FourierLibrary(n_frequencies=2))
-
-        if len(feature_libs) > 1:
-            lib = ps.ConcatLibrary(feature_libs)
-        else:
-            lib = feature_libs[0]
+        poly_degree = max(1, min(poly_degree, 5))
+        threshold = max(0.01, min(threshold, 1.0))
 
         try:
-            model = ps.SINDy(
-                feature_library=lib,
-                optimizer=ps.STLSQ(threshold=threshold, alpha=0.05),
+            eq_y = nd.parse(y.replace('^', '**').replace('np.', ''))
+            data_y = eq_y.eval(data).flatten()
+        except Exception as e:
+            raise ValueError(
+                f"Failed to compute target '{y}': {str(e)}" +
+                "\nOther exceptions: " + "; ".join(exceptions)
             )
-            # Use SINDy's fit with x_dot=y to perform static regression y = f(X)
-            model.fit(X_matrix, t=1, x_dot=y_vec.reshape(-1, 1), feature_names=x_names)
+        y_vec = data_y
 
-            equations = model.equations()
-            if equations and len(equations) > 0:
-                formula_str = self._clean_formula(equations[0], x_names)
-            else:
-                formula_str = "0"
-                exceptions.append("SINDy returned empty equations")
+        eq_x_list = []
+        data_x_list = []
+        x_names = []
+        for idx, xi in enumerate(x, 1):
+            try:
+                eq_x = nd.parse(xi.replace('^', '**').replace('np.', ''))
+                data_x = eq_x.eval(data).flatten()
+                eq_x_list.append(eq_x)
+                data_x_list.append(data_x)
+                x_names.append(f"x{idx}")
+                assert data_x.shape == data_y.shape, f"Feature '{xi}' shape {data_x.shape} does not match target shape {data_y.shape}."
+            except Exception as e:
+                exceptions.append(f"Failed to compute feature '{xi}': {str(e)}")
+        if len(eq_x_list) == 0:
+            raise ValueError(
+                "No valid input variables available for fitting.\n" +
+                "Other exceptions: " + "; ".join(exceptions)
+            )
+        X_matrix = np.column_stack(data_x_list)
+
+        if len(y_vec) > max_samples:
+            rng = np.random.default_rng(42)
+            idx = rng.choice(len(y_vec), size=max_samples, replace=False)
+            X_fit = X_matrix[idx]
+            y_fit = y_vec[idx]
+        else:
+            X_fit = X_matrix
+            y_fit = y_vec
+
+        try:
+            formula_str = self._run_sindy(
+                X_fit, y_fit, x_names, poly_degree, include_trig, threshold
+            )
         except Exception as e:
             formula_str = "0"
             exceptions.append(f"SINDy fitting failed: {type(e).__name__}: {e}")
 
         if formula_str and formula_str != "0":
-            try:
-                metrics = self.evaluate(eq=formula_str)
-                is_candidate = (y_name == self.context['target']) and (y_name not in (x or []))
-            except Exception as e:
-                metrics = {"mse": float("inf")}
-                is_candidate = False
-                exceptions.append(f"Formula evaluation failed: {e}")
+            formula_str = self._restore_feature_names(formula_str, x_names, x)
+            metrics = self.evaluate(eq=formula_str)
+            is_candidate = (y == self.context['target']) and (y not in x)
         else:
             metrics = {"mse": float("inf")}
             is_candidate = False
@@ -91,22 +110,51 @@ class SINDyTool(BaseTool):
             "formula": formula_str,
             "metrics": metrics,
             "is_candidate": is_candidate,
-            "method": "SINDy (STLSQ sparse regression)",
+            "method": "SINDy",
             "config": {
                 "poly_degree": poly_degree,
                 "include_trig": include_trig,
                 "threshold": threshold,
+                "max_samples": max_samples,
             },
             "exceptions": exceptions,
         }
 
+    def _run_sindy(
+        self,
+        X,
+        y,
+        x_names: List[str],
+        poly_degree: int,
+        include_trig: bool,
+        threshold: float,
+    ) -> str:
+        """Run PySINDy static regression and return a cleaned formula."""
+        import pysindy as ps
+
+        feature_libs = [ps.PolynomialLibrary(degree=poly_degree, include_interaction=True)]
+        if include_trig:
+            feature_libs.append(ps.FourierLibrary(n_frequencies=2))
+
+        lib = ps.ConcatLibrary(feature_libs) if len(feature_libs) > 1 else feature_libs[0]
+        model = ps.SINDy(
+            feature_library=lib,
+            optimizer=ps.STLSQ(threshold=threshold, alpha=0.05),
+        )
+        # Use SINDy's fit with x_dot=y to perform static regression y = f(X)
+        model.fit(X, t=1, x_dot=y.reshape(-1, 1), feature_names=x_names)
+
+        equations = model.equations()
+        if not equations:
+            return "0"
+        return self._clean_formula(equations[0], x_names)
+
     def _clean_formula(self, equation_str: str, x_names: List[str]) -> str:
         """Clean up SINDy output formula to be compatible with nd2py."""
-        import re
-
         formula = equation_str.strip()
         # Remove leading/trailing whitespace around operators
         formula = re.sub(r'\s+', ' ', formula)
+        formula = re.sub(r'\+\s+-', '-', formula)
 
         # SINDy outputs like " 1.000 x1^2 +  3.000 x1 x2"
         # Parse terms: coefficient * feature_product
@@ -152,6 +200,23 @@ class SINDyTool(BaseTool):
         formula = " + ".join(terms)
         formula = formula.replace("+ -", "- ")
         return formula
+
+    def _restore_feature_names(
+        self,
+        formula: str,
+        internal_names: List[str],
+        original_expressions: List[str],
+    ) -> str:
+        """Replace SINDy feature names with original variables or expressions."""
+        restored = formula
+        replacements = dict(zip(internal_names, original_expressions))
+        placeholders = {name: f"__sindy_feature_{idx}__" for idx, name in enumerate(replacements)}
+        for name in sorted(replacements, key=len, reverse=True):
+            restored = re.sub(rf"\b{re.escape(name)}\b", placeholders[name], restored)
+        for name, expr in replacements.items():
+            expr = expr.replace("^", "**").replace("np.", "")
+            restored = restored.replace(placeholders[name], f"({expr})")
+        return restored
 
     @classmethod
     def format_result_dict(cls, result: Dict[str, Any]) -> str:

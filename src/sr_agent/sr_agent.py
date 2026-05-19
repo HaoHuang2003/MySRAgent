@@ -239,15 +239,13 @@ class SRAgent(FactoryMixin):
         initial_prompt = []
 
         # 根据是否有历史最优结果来动态设置 MSE 目标
-        if top_records:
-            best_mse = top_records[0][-1]['mse']
-            if best_mse > 0:
-                target_mse = best_mse * 0.1
-                mse_goal = f"Your target is to find a formula with MSE < {target_mse:.6g} (10x better than the previous best MSE of {best_mse:.6g})."
-            else:
-                mse_goal = "The previous round already achieved MSE = 0. Try to find a simpler formula that also achieves MSE = 0."
-        else:
+        if not top_records:
             mse_goal = "You should try to find a simple formula that fits the data with an MSE of EXACTLY 0."
+        elif (best_mse := top_records[0][-1]['mse']) > 0:
+            target_mse = best_mse * 0.1
+            mse_goal = f"Your target is to find a formula with MSE < {target_mse:.6g} (10x better than the previous best MSE of {best_mse:.6g})."
+        else:
+            mse_goal = "The previous round already achieved MSE = 0. Try to find a simpler formula that also achieves MSE = 0."
 
         # 构建 system prompt
         initial_prompt.append({

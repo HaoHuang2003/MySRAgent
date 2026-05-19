@@ -2,7 +2,7 @@
 # git clone git@github.com:yuzhTHU/MySRAgent.git ./SRAgent && cd SRAgent
 
 # 创建环境
-conda create -p ./sr_agent python=3.12 -y && conda activate ./sr_agent
+conda create -p ./venv python=3.12 -y && conda activate ./venv
 
 # nd2py 库尚不稳定，建议以可编辑方式单独安装
 git clone git@github.com:yuzhTHU/nd2py.git ./third-party/nd2py
