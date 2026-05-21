@@ -248,13 +248,12 @@ class EquationEmbedder(nn.Module):
         self.pad_token_id = register_token(self.PAD_TOKEN)
         self.unk_token_id = register_token(self.UNK_TOKEN)
         self.variable_ids = [next(token_id_iter) for _ in range(self.max_variables)]
-        self._next_variable_slot = 0
-        self.operand_to_id = {
-            operand: register_token(operand.__name__) for operand in self.operands
-        }
-        num_symbol_embeddings = next(token_id_iter)
+        self.operand_to_id = {op: register_token(op.__name__) for op in self.operands}
+        self.num_symbol_embeddings = next(token_id_iter)
         self.symbol_embedding = nn.Embedding(
-            num_symbol_embeddings, d_model, padding_idx=self.pad_token_id,
+            self.num_symbol_embeddings, 
+            d_model, 
+            padding_idx=self.pad_token_id,
         )
 
     def tokenize(self, eq: nd.Symbol) -> list[str | float]:

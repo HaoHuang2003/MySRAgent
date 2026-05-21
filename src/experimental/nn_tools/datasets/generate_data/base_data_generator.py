@@ -38,7 +38,7 @@ class BaseDataGenerator(FactoryMixin):
                 if valid_data_count >= self.sample_num:
                     break
             if failure := (valid_data_count < self.sample_num):
-                _logger.warning(f"Only {valid_data_count} valid samples generated for equation {eq} after {self.max_retry} retries.")
+                # _logger.warning(f"Only {valid_data_count} valid samples generated for equation {eq} after {self.max_retry} retries.")
                 # 将一部分 invalid_data 也加入 valid_data_dict, 凑齐 sample_num 的要求
                 needed = self.sample_num - valid_data_count
                 invalid_idx = ~valid_idx

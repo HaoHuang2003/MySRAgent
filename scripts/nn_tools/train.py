@@ -3,11 +3,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "src" / "experimental"))
 
 import re
-import os
 import json
 import torch
 import shlex
@@ -15,204 +13,140 @@ import logging
 import argparse
 import torch.nn as nn
 import torch.utils.data as D
-from tqdm import tqdm
 from datetime import datetime
 from socket import gethostname
+from typing import Any, Dict, Optional
 from torch.nn.utils.rnn import pad_sequence
-from sr_agent.utils import setup_logging, add_minus_flags, add_negation_flags, seed_all, tag2ansi, NamedTimer, ParallelTimer
 from nn_tools.datasets.generate_eq import BaseEqGenerator
 from nn_tools.datasets.generate_data import BaseDataGenerator
 from nn_tools.datasets.data_eq_dataset import DataEqDataset, InfiniteSampler
 from nn_tools.models import EquationEmbedder, FloatEmbedder, FoundationModel, DataEmbedder
+from sr_agent.utils import setup_logging, add_minus_flags, add_negation_flags, seed_all, tag2ansi, NamedTimer, ParallelTimer, log_exception
 
 SCRIPT_NAME = Path(__file__).stem
 _logger = logging.getLogger(f"sr_agent.{SCRIPT_NAME}")
 
 
-def unique_parameters(*modules: nn.Module):
-    seen = set()
-    for module in modules:
-        for param in module.parameters():
-            if id(param) not in seen:
-                seen.add(id(param))
-                yield param
+def run_model(
+    args, model, criterion, optimizer, scheduler,
+    float_embedder, equation_embedder, data_embedder,
+    mode, trainable_params, batch=None, data_loader=None,
+) -> Dict[str, Any]:
+    if mode == 'train':
+        batches = (batch,)
+        for module in (model, float_embedder, equation_embedder, data_embedder):
+            module.train()
+    elif mode == 'test':
+        batches = data_loader
+        for module in (model, float_embedder, equation_embedder, data_embedder):
+            module.eval()
+    else:
+        raise ValueError(f"Invalid mode: {mode!r}. Must be 'train' or 'test'.")
 
-
-def make_prefix_batch(
-    index: torch.Tensor,
-    data_embedding: torch.Tensor,
-    pad_token_id: int,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    prefixes = []
-    targets = []
-    data_rows = []
-    for row_idx, row in enumerate(index):
-        valid = row[row != pad_token_id]
-        for next_pos in range(1, valid.numel()):
-            prefixes.append(valid[:next_pos])
-            targets.append(valid[next_pos])
-            data_rows.append(data_embedding[row_idx])
-
-    prefix_index = pad_sequence(prefixes, batch_first=True, padding_value=pad_token_id)
-    prefix_padding_mask = prefix_index == pad_token_id
-    target = torch.stack(targets)
-    repeated_data_embedding = torch.stack(data_rows, dim=0)
-    return repeated_data_embedding, prefix_index, prefix_padding_mask, target
-
-
-def embed_data_batch(data: torch.Tensor, float_embedder: FloatEmbedder, data_embedder: DataEmbedder) -> torch.Tensor:
-    batch_size, sample_num = data.shape[:2]
-    value_embedding = float_embedder(data).flatten(0, 1)
-    data_embedding = data_embedder.pool(value_embedding)
-    return data_embedding.reshape(batch_size, sample_num, -1)
-
-
-def build_dataset(args, eq_generator, data_generator, equation_embedder, *, n_samples, random_state):
-    return DataEqDataset(
-        max_var_num=args.max_var_num,
-        eq_generator=eq_generator,
-        data_generator=data_generator,
-        n_samples=n_samples,
-        random_state=random_state,
-        equation_embedder=equation_embedder,
-    )
-
-
-def build_batch_loss(
-    batch,
-    model: FoundationModel,
-    float_embedder: FloatEmbedder,
-    equation_embedder: EquationEmbedder,
-    data_embedder: DataEmbedder,
-    criterion: nn.Module,
-    args,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    data = batch["data"].to(args.device)
-    index = batch["index"].to(args.device)
-
-    data_embedding = embed_data_batch(data, float_embedder, data_embedder)
-    (
-        repeated_data_embedding,
-        prefix_index,
-        prefix_padding_mask,
-        target,
-    ) = make_prefix_batch(index, data_embedding, equation_embedder.pad_token_id)
-    partial_equation_embedding = equation_embedder.symbol_embedding(prefix_index)
-    logits = model(
-        repeated_data_embedding,
-        partial_equation_embedding,
-        eq_padding_mask=prefix_padding_mask,
-    )
-    return criterion(logits, target), logits, target
-
-
-@torch.no_grad()
-def evaluate(eval_loader, model, float_embedder, equation_embedder, data_embedder, criterion, args) -> dict:
-    model.eval()
-    float_embedder.eval()
-    equation_embedder.eval()
-    data_embedder.eval()
     total_loss = 0.0
     total_correct = 0
     total_count = 0
-    for batch in eval_loader:
-        loss, logits, target = build_batch_loss(
-            batch,
-            model,
-            float_embedder,
-            equation_embedder,
-            data_embedder,
-            criterion,
-            args,
-        )
-        count = int(target.numel())
-        total_loss += loss.item() * count
-        total_correct += int((logits.argmax(dim=-1) == target).sum().item())
-        total_count += count
-    model.train()
-    float_embedder.train()
-    equation_embedder.train()
-    data_embedder.train()
+    with torch.set_grad_enabled(mode == "train"):
+        for current_batch in batches:
+            data = current_batch["data"].to(args.device)
+            index = current_batch["index"].to(args.device)
+
+            batch_size, sample_num = data.shape[:2]
+            value_embedding = float_embedder(data).flatten(0, 1)
+            data_embedding = data_embedder.pool(value_embedding).reshape(batch_size, sample_num, -1)
+
+            pad_token_id = equation_embedder.pad_token_id
+            prefixes = []
+            targets = []
+            data_rows = []
+            for row_idx, row in enumerate(index):
+                valid = row[row != pad_token_id]
+                for next_pos in range(1, valid.numel()):
+                    prefixes.append(valid[:next_pos])
+                    targets.append(valid[next_pos])
+                    data_rows.append(data_embedding[row_idx])
+
+            prefix_index = pad_sequence(prefixes, batch_first=True, padding_value=pad_token_id)
+            prefix_padding_mask = prefix_index == pad_token_id
+            target = torch.stack(targets)
+            repeated_data_embedding = torch.stack(data_rows, dim=0)
+
+            partial_equation_embedding = equation_embedder.symbol_embedding(prefix_index)
+            logits = model(
+                repeated_data_embedding,
+                partial_equation_embedding,
+                eq_padding_mask=prefix_padding_mask,
+            )
+            loss = criterion(logits, target)
+
+            if mode == 'train':
+                optimizer.zero_grad(set_to_none=True)
+                loss.backward()
+                if args.grad_clip > 0:
+                    nn.utils.clip_grad_norm_(trainable_params, args.grad_clip)
+                optimizer.step()
+                if scheduler is not None:
+                    scheduler.step()
+
+            count = int(target.numel())
+            total_loss += loss.item() * count
+            total_correct += int((logits.argmax(dim=-1) == target).sum().item())
+            total_count += count
+
     return {
+        "mode": mode,
         "loss": total_loss / total_count,
         "accuracy": total_correct / total_count,
+        "count": total_count,
     }
 
 
-def warn_arg_diff(saved_args, current_args):
-    if isinstance(saved_args, argparse.Namespace):
-        saved_args = vars(saved_args)
-    current_args = vars(current_args)
-    for key in sorted(set(saved_args) | set(current_args)):
-        val1 = saved_args.get(key, None)
-        val2 = current_args.get(key, None)
-        if val1 != val2:
-            _logger.warning(
-                f"Argument '{key}' differs from the saved checkpoint: "
-                f"saved_args={val1} vs. current_args={val2}"
-            )
+def log_epoch(args, train_record, test_record, states) -> str:
+    lines = [f"Step=[bold blue]{states['step']}"]
+    if train_record is not None:
+        lines.append(
+            f"Train Loss=[green]{train_record['loss']:.6f}[reset], "
+            f"Train Acc=[green]{train_record['accuracy']:.1%}[reset]"
+        )
+    if test_record is not None:
+        lines.append(
+            f"Eval Loss=[red]{test_record['loss']:.6f}[reset], "
+            f"Eval Acc=[red]{test_record['accuracy']:.1%}[reset]"
+        )
+    if states.get("patience") is not None:
+        lines.append(f"Patience=[magenta]{states['patience']}/{args.patience}[reset]")
+    if states.get('named_timer') is not None:
+        time_usage = states['named_timer'].to_str(mode='time', mode_of_detail='pace', mode_of_percent='by_time')
+        lines.append(f"Time Usage=[gray]{time_usage}[reset]")
+    if states.get('total_timer') is not None:
+        speed = states['total_timer'].to_str(mode='time', mode_of_detail='speed', mode_of_percent=None)
+        lines.append(f"Speed=[gray]{speed}[reset]")
+    return tag2ansi("\n".join(lines))
 
 
-def load_checkpoint(
-    args,
-    model: FoundationModel,
-    optimizer: torch.optim.Optimizer,
-    *,
-    float_embedder: FloatEmbedder,
-    equation_embedder: EquationEmbedder,
-    data_embedder: DataEmbedder,
-    scheduler=None,
-) -> tuple[int, dict]:
-    if args.reload_checkpoint is not None:
-        checkpoint_path = Path(args.reload_checkpoint)
-    elif (Path(args.save_path) / "checkpoint.pth").exists():
-        checkpoint_path = Path(args.save_path) / "checkpoint.pth"
-    else:
-        return 0, {}
-
-    if not checkpoint_path.exists():
-        raise FileNotFoundError(f"Checkpoint {checkpoint_path} not found.")
-
-    checkpoint = torch.load(checkpoint_path, map_location=args.device, weights_only=False)
-    if "args" in checkpoint:
-        warn_arg_diff(checkpoint["args"], args)
-
-    model_state = checkpoint["model"]
-    if "foundation_model" in model_state:
-        model.load_state_dict(model_state["foundation_model"])
-        if "float_embedder" in model_state:
-            float_embedder.load_state_dict(model_state["float_embedder"])
-        if "equation_embedder" in model_state:
-            equation_embedder.load_state_dict(model_state["equation_embedder"])
-        if "data_embedder" in model_state:
-            data_embedder.load_state_dict(model_state["data_embedder"])
-    else:
-        model.load_state_dict(model_state)
-
-    if "optimizer" in checkpoint:
-        optimizer.load_state_dict(checkpoint["optimizer"])
-    else:
-        _logger.warning("Optimizer state not found in checkpoint; optimizer re-initialized.")
-
-    if scheduler is not None and "scheduler" in checkpoint:
-        scheduler.load_state_dict(checkpoint["scheduler"])
-    elif scheduler is not None:
-        _logger.warning("Scheduler is enabled but scheduler state was not found in checkpoint.")
-
-    step = int(checkpoint.get("step", 0))
-    _logger.note(tag2ansi(
-        f"Checkpoint loaded from [underline green]{checkpoint_path}[reset], "
-        f"resume from step [underline green]{step + 1}[reset]."
-    ))
-    return step, checkpoint.get("training_state", {})
+def save_checkpoint(
+    save_path, step, args, model, optimizer, scheduler, states,
+    float_embedder, equation_embedder, data_embedder,
+) -> None:
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save({
+        "step": step,
+        "args": args,
+        "model": model.state_dict(),
+        'float_embedder': float_embedder.state_dict(),
+        "equation_embedder": equation_embedder.state_dict(),
+        "data_embedder": data_embedder.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "scheduler": scheduler.state_dict() if scheduler is not None else None,
+        "states": states,
+    }, save_path)
 
 
-def main(args):
-    # 准备 Generator
+def build_dataloader(args, seed, n_samples, batch_size, equation_embedder, sampler=None, shuffle=False):
     eq_generator = BaseEqGenerator.create(
         args.eq_generator,
         n_variables=args.max_var_num,
-        random_seed=args.seed,
+        random_seed=seed,
         const_range=None,
         depth_range=(args.min_depth, args.max_depth + 1),
         n_var_range=(1, args.max_var_num + 1),
@@ -220,331 +154,287 @@ def main(args):
     data_generator = BaseDataGenerator.create(
         args.data_generator,
         sample_num=args.sample_num,
-        random_seed=args.seed,
+        random_seed=seed,
         range=(args.data_min, args.data_max),
     )
-    _logger.info(
-        f"Equation generator: {args.eq_generator}\n"
-        f"Data generator: {args.data_generator}"
-    )
-    
-    # 准备 Embedder
-    float_embedder = FloatEmbedder(
-        d_model=args.d_model
-    ).to(args.device)
-    equation_embedder = EquationEmbedder(
-        d_model=args.d_model,
-        max_variables=args.max_var_num,
-        operands=eq_generator.symbols,
-    ).to(args.device)
-    data_embedder = DataEmbedder(
-        d_model=args.d_model,
-        float_embedder=float_embedder,
-        pooling=args.data_pooling,
-    ).to(args.device)
-    
-    # 准备 Dataset / Dataloader
-    train_dataset = build_dataset(
-        args,
-        eq_generator,
-        data_generator,
-        equation_embedder,
-        n_samples=None,
-        random_state=args.seed,
-    )
-    train_loader = D.DataLoader(
-        train_dataset,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        collate_fn=train_dataset.collate_fn,
-        sampler=InfiniteSampler(),
-    )
-    eval_data_generator = BaseDataGenerator.create(
-        args.data_generator,
-        sample_num=args.sample_num,
-        random_seed=args.eval_seed,
-        range=(args.data_min, args.data_max),
-    )
-    eval_dataset = build_dataset(
-        args,
-        eq_generator,
-        eval_data_generator,
-        equation_embedder,
-        n_samples=args.eval_size,
-        random_state=args.eval_seed,
-    )
-    eval_loader = D.DataLoader(
-        eval_dataset,
-        batch_size=args.eval_batch_size,
-        num_workers=args.num_workers,
-        collate_fn=eval_dataset.collate_fn,
-        shuffle=False,
-    )
-    
-    # 准备 Model / Optimizer / Criterion / (Scheduler)
-    model = FoundationModel(
-        d_model=args.d_model,
-        vocab_size=equation_embedder.symbol_embedding.num_embeddings,
-        nhead=args.nhead,
-        num_encoder_layers=args.num_encoder_layers,
-        num_decoder_layers=args.num_decoder_layers,
-        dim_feedforward=args.dim_feedforward,
-        dropout=args.dropout,
-        max_formula_len=args.max_formula_len,
-        output_pooling=args.output_pooling,
-    ).to(args.device)
-    trainable_params = list(unique_parameters(
-        float_embedder,
-        equation_embedder,
-        data_embedder,
-        model,
-    ))
-    optimizer = torch.optim.AdamW(
-        trainable_params,
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-    )
-    if args.scheduler == "cosine":
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer,
-            T_max=args.scheduler_t_max,
-            eta_min=args.scheduler_eta_min,
-        )
-    else:
-        scheduler = None
-    criterion = nn.CrossEntropyLoss()
-    _logger.info(
-        f"Model initialized with {sum(p.numel() for p in trainable_params):,} parameters. "
-        f"Trainable parameters: {sum(p.numel() for p in trainable_params if p.requires_grad):,}. "
-        f"Device: {args.device}."
-    )
-    start_step, training_state = load_checkpoint(
-        args,
-        model,
-        optimizer,
-        float_embedder=float_embedder,
+    dataset = DataEqDataset(
+        max_var_num=args.max_var_num,
+        eq_generator=eq_generator,
+        data_generator=data_generator,
+        n_samples=n_samples,
+        random_state=seed,
         equation_embedder=equation_embedder,
-        data_embedder=data_embedder,
-        scheduler=scheduler,
     )
+    dataloader = D.DataLoader(
+        dataset,
+        batch_size=batch_size,
+        num_workers=args.num_workers,
+        collate_fn=dataset.collate_fn,
+        sampler=sampler,
+        shuffle=shuffle,
+    )
+    return dataloader
 
-    # 训练模型
-    started_at = datetime.now()
-    result = {
-        "start_time": started_at.strftime("%Y-%m-%d %H:%M:%S"),
-        "duration_seconds": None,
-        "status": "running",
-        "last_train_loss": None,
-        "last_accuracy": None,
-        "best_eval_loss": training_state.get("best_eval_loss", None),
-        "best_eval_accuracy": training_state.get("best_eval_accuracy", None),
-        "best_step": training_state.get("best_step", None),
-        "steps": start_step,
-        "checkpoint": None,
-        "best_checkpoint": training_state.get("best_checkpoint", None),
-    }
-    total_timer = ParallelTimer() # 总用时统计
-    named_timer = NamedTimer() # 细粒度用时统计
-    best_eval_loss = training_state.get("best_eval_loss", None)
-    if best_eval_loss is None:
-        best_eval_loss = float("inf")
-    patience_left = training_state.get("patience_left", args.patience)
-    last_periodic_checkpoint_time = datetime.now()
+
+def main(args):
+    ## 准备训练 & 测试数据 —— 已经过人类审核，不得擅自修改
+    if True:    
+        # 准备 Embedder
+        tmp_eq_generator = BaseEqGenerator.create(
+            args.eq_generator,
+            n_variables=args.max_var_num,
+            random_seed=args.seed,
+            const_range=None,
+            depth_range=(args.min_depth, args.max_depth + 1),
+            n_var_range=(1, args.max_var_num + 1),
+        )
+        float_embedder = FloatEmbedder(
+            d_model=args.d_model
+        ).to(args.device)
+        equation_embedder = EquationEmbedder(
+            d_model=args.d_model, 
+            operands=tmp_eq_generator.symbols,
+            max_variables=args.max_var_num, 
+        ).to(args.device)
+        data_embedder = DataEmbedder(
+            d_model=args.d_model,
+            pooling=args.data_pooling,
+            float_embedder=float_embedder,
+        ).to(args.device)
+    
+        # 准备 Dataset / Dataloader
+        train_loader = build_dataloader(
+            args=args, seed=args.seed, n_samples=None,
+            batch_size=args.batch_size,
+            equation_embedder=equation_embedder,
+            sampler=InfiniteSampler(),
+        )
+        eval_loader = build_dataloader(
+            args=args, seed=args.eval_seed, n_samples=args.eval_size,
+            batch_size=args.eval_batch_size,
+            equation_embedder=equation_embedder,
+            shuffle=False,
+        )
+        test_loader = build_dataloader(
+            args=args, seed=666, n_samples=512,
+            batch_size=args.eval_batch_size,
+            equation_embedder=equation_embedder,
+            shuffle=False,
+        )
+        _logger.info(f"Equation generator={args.eq_generator}, Data generator={args.data_generator}")
+
+    
+    ## 准备 Model / Optimizer / Criterion / (Scheduler) —— 已经过人类审核，不得擅自修改
+    if True:
+        # Model
+        args.vocab_size = equation_embedder.num_symbol_embeddings
+        model = FoundationModel(args=args).to(args.device)
+
+        # Params
+        trainable_params = {}
+        for module in (float_embedder, equation_embedder, data_embedder, model):
+            for param in module.parameters():
+                if id(param) not in trainable_params:
+                    trainable_params[id(param)] = param
+        trainable_params = list(trainable_params.values())
+
+        # Optimizer
+        optimizer = torch.optim.AdamW(
+            trainable_params, 
+            lr=args.lr, 
+            weight_decay=args.weight_decay
+        )
+
+        # Scheduler
+        if args.scheduler == "cosine":
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer, 
+                T_max=args.scheduler_t_max, 
+                eta_min=args.scheduler_eta_min
+            )
+        else:
+            scheduler = None
+        
+        # Criterion
+        criterion = nn.CrossEntropyLoss()
+        _logger.info(
+            f"Model initialized with {sum(p.numel() for p in trainable_params):,} parameters. "
+            f"Trainable parameters: {sum(p.numel() for p in trainable_params if p.requires_grad):,}. "
+            f"Device: {args.device}."
+        )
+    
+    ## 加载检查点 & 恢复训练状态 (如果有的话) —— 已经过人类审核，不得擅自修改
+    if True:
+        if args.reload_checkpoint is None:
+            checkpoint_path = Path(args.save_path) / "checkpoint.pth"
+        elif Path(args.reload_checkpoint).exists():
+            checkpoint_path = Path(args.reload_checkpoint)
+        else:
+            raise ValueError(f"Checkpoint path {args.reload_checkpoint!r} does not exist.")
+        if not checkpoint_path.exists():
+            states = {}
+        else:
+            # Saved args
+            checkpoint = torch.load(checkpoint_path, map_location=args.device, weights_only=False)
+            if (saved_args := vars(checkpoint["args"])) is not None:
+                current_args = vars(args)
+                for key in sorted(set(saved_args) | set(current_args)):
+                    saved_value, current_value = saved_args.get(key), current_args.get(key)
+                    if saved_value != current_value:
+                        _logger.warning(
+                            f"Argument {key!r} differs from the saved checkpoint: "
+                            f"saved_args={saved_value!r} vs. current_args={current_value!r}"
+                        )
+            # Saved embedders, model, optimizer, and scheduler            
+            if 'float_embedder' in checkpoint and float_embedder is not None:
+                float_embedder.load_state_dict(checkpoint['float_embedder'])
+            if 'equation_embedder' in checkpoint and equation_embedder is not None:
+                equation_embedder.load_state_dict(checkpoint['equation_embedder'])
+            if 'data_embedder' in checkpoint and data_embedder is not None:
+                data_embedder.load_state_dict(checkpoint['data_embedder'])
+            if 'model' in checkpoint:
+                model.load_state_dict(checkpoint['model'])
+            else:
+                _logger.warning("Model state not found in checkpoint; model re-initialized.")
+
+            if 'optimizer' in checkpoint:
+                optimizer.load_state_dict(checkpoint['optimizer'])
+            else:
+                _logger.warning("Optimizer state not found in checkpoint; optimizer re-initialized.")
+
+            if checkpoint.get('scheduler') is not None and scheduler is not None:
+                scheduler.load_state_dict(checkpoint['scheduler'])
+            elif scheduler is not None:
+                _logger.warning("Scheduler is enabled but scheduler state was not found in checkpoint.")
+
+            states = checkpoint["states"]
+            _logger.note(tag2ansi(
+                f"Checkpoint loaded from [underline green]{checkpoint_path}[reset], "
+                f"resume from step [underline green]{states['step']}[reset]."
+            ))
+
+    ## 训练循环
+    start_time = datetime.now()
+    states.setdefault("step", 0) # 当前训练步
+    states.setdefault('total_timer', ParallelTimer(unit=''))  # 总用时统计
+    states.setdefault('named_timer', NamedTimer())  # 细粒度用时统计
+    states.setdefault("patience", args.patience)       # 早停耐心值
+    states.setdefault("best_record", {"loss": None, "accuracy": None, "step": None})
+    start_step = states["step"]
+    result = {'status': 'running'}
     try:
-        progress = tqdm(enumerate(train_loader, start=start_step + 1), desc="train", dynamic_ncols=True)
-        for step, batch in progress:
+        named_timer = states['named_timer']
+        total_timer = states['total_timer']
+
+        for step, batch in enumerate(train_loader, start=start_step):
+            states['step'] = step
             named_timer.add("prepare_data")
 
-            # 前向预测
-            loss, logits, target = build_batch_loss(
-                batch,
-                model,
-                float_embedder,
-                equation_embedder,
-                data_embedder,
-                criterion,
-                args,
-            )
-            named_timer.add("forward")
-
-            # 反向传播
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            if args.grad_clip > 0:
-                nn.utils.clip_grad_norm_(
-                    trainable_params,
-                    args.grad_clip,
-                )
-            optimizer.step()
-            if scheduler is not None:
-                scheduler.step()
-            named_timer.add("backward")
-
-            # 后处理
-            accuracy = (logits.argmax(dim=-1) == target).float().mean().item()
-            result["last_train_loss"] = loss.item()
-            result["last_accuracy"] = accuracy
-            result["steps"] = step
-            if step % args.log_every == 0:
-                progress.set_postfix(
-                    train_loss=f"{loss.item():.4f}",
-                    train_acc=f"{accuracy:.3f}",
-                    best_eval="nan" if result["best_eval_loss"] is None else f"{result['best_eval_loss']:.4f}",
-                    patience=f"{patience_left}/{args.patience}",
-                )
-            total_timer.add("step", n=1)
-            total_timer.add("eq", n=target.numel())
-            if (
-                args.save_every_seconds > 0
-                and (datetime.now() - last_periodic_checkpoint_time).total_seconds() >= args.save_every_seconds
-            ):
-                save_checkpoint(
-                    Path(args.save_path) / "checkpoints" / f"epoch_{step:06d}.pth",
-                    step,
+            ## 训练模型
+            if args.test_before_train and states['step'] == 0:
+                train_record = None
+            else:
+                train_record = run_model(
                     args,
                     model,
+                    criterion,
                     optimizer,
-                    float_embedder=float_embedder,
-                    equation_embedder=equation_embedder,
-                    data_embedder=data_embedder,
-                    scheduler=scheduler,
-                    training_state={
-                        "best_eval_loss": result["best_eval_loss"],
-                        "best_eval_accuracy": result["best_eval_accuracy"],
-                        "best_step": result["best_step"],
-                        "best_checkpoint": result["best_checkpoint"],
-                        "patience_left": patience_left,
-                    },
-                )
-                last_periodic_checkpoint_time = datetime.now()
-
-            if step % args.eval_every == 0:
-                eval_record = evaluate(
-                    eval_loader,
-                    model,
+                    scheduler,
                     float_embedder,
                     equation_embedder,
                     data_embedder,
-                    criterion,
-                    args,
+                    mode='train',
+                    trainable_params=trainable_params,
+                    batch=batch,
                 )
-                _logger.info(
-                    f"[Step {step}] "
-                    f"train_loss={loss.item():.6f}, train_acc={accuracy:.3f}, "
-                    f"eval_loss={eval_record['loss']:.6f}, eval_acc={eval_record['accuracy']:.3f}, "
-                    f"patience_left={patience_left}/{args.patience}, "
-                    f"timer={named_timer}, total={total_timer}"
-                )
-                if eval_record["loss"] < best_eval_loss:
-                    best_eval_loss = eval_record["loss"]
-                    patience_left = args.patience
-                    best_path = Path(args.save_path) / "best.pth"
-                    save_checkpoint(
-                        best_path,
-                        step,
-                        args,
-                        model,
-                        optimizer,
-                        float_embedder=float_embedder,
-                        equation_embedder=equation_embedder,
-                        data_embedder=data_embedder,
-                        scheduler=scheduler,
-                        training_state={
-                            "best_eval_loss": eval_record["loss"],
-                            "best_eval_accuracy": eval_record["accuracy"],
-                            "best_step": step,
-                            "best_checkpoint": str(best_path),
-                            "patience_left": patience_left,
-                        },
-                    )
-                    result["best_eval_loss"] = eval_record["loss"]
-                    result["best_eval_accuracy"] = eval_record["accuracy"]
-                    result["best_step"] = step
-                    result["best_checkpoint"] = str(best_path)
-                else:
-                    patience_left -= 1
-                    if patience_left <= 0:
-                        result["status"] = "early_stopped"
-                        break
-                progress.set_postfix(
-                    train_loss=f"{loss.item():.4f}",
-                    eval_loss=f"{eval_record['loss']:.4f}",
-                    eval_acc=f"{eval_record['accuracy']:.3f}",
-                    patience=f"{patience_left}/{args.patience}",
-                )
-            named_timer.add("post_process")
+                named_timer.add("train")
 
-        checkpoint_path = Path(args.save_path) / "checkpoint.pth"
-        save_checkpoint(
-            checkpoint_path,
-            result["steps"],
-            args,
-            model,
-            optimizer,
-            float_embedder=float_embedder,
-            equation_embedder=equation_embedder,
-            data_embedder=data_embedder,
-            scheduler=scheduler,
-            training_state={
-                "best_eval_loss": result["best_eval_loss"],
-                "best_eval_accuracy": result["best_eval_accuracy"],
-                "best_step": result["best_step"],
-                "best_checkpoint": result["best_checkpoint"],
-                "patience_left": patience_left,
-            },
-        )
-        result["checkpoint"] = str(checkpoint_path)
-        if result["status"] == "running":
+                # 后处理
+                total_timer.add("step", n=1)
+                total_timer.add("eq", n=train_record["count"])
+
+                # 保存检查点
+                if states['step'] >= 100 and set(str(states['step'])[1:]) == {'0'}: # 只在 100, 200, ..., 1000, 2000, ... 这样的整数倍步数保存
+                    save_checkpoint(
+                        Path(args.save_path) / "checkpoints" / f"epoch_{states['step']:06d}.pth",
+                        states['step'], args, model, optimizer, scheduler, states,
+                        float_embedder, equation_embedder, data_embedder,
+                    )
+                named_timer.add("post_process")
+
+            ## 评估模型
+            if states['step'] % args.eval_every != 0:
+                eval_record = None
+            else:
+                # 计算评测指标
+                eval_record = run_model(
+                    args,
+                    model,
+                    criterion,
+                    optimizer,
+                    scheduler,
+                    float_embedder,
+                    equation_embedder,
+                    data_embedder,
+                    mode='test',
+                    trainable_params=trainable_params,
+                    data_loader=eval_loader,
+                )
+                # 更新最佳记录 & 耐心值
+                best_record = states["best_record"]
+                if best_record["loss"] is None or eval_record["loss"] < best_record["loss"]:
+                    states["best_record"] = {**eval_record, "step": step}
+                    states["patience"] = args.patience
+                    save_checkpoint(
+                        Path(args.save_path) / "best.pth",
+                        step, args, model, optimizer, scheduler, states,
+                        float_embedder, equation_embedder, data_embedder,
+                    )
+                    log = log_epoch(args, train_record, eval_record, states)
+                    _logger.note(f"Best record updated.\n{log}")
+                elif states["patience"] > 0:
+                    states["patience"] -= 1
+                    log = log_epoch(args, train_record, eval_record, states)
+                    _logger.info(f"Patience decreased.\n{log}")
+                else:
+                    log = log_epoch(args, train_record, eval_record, states)
+                    _logger.info(f"Early stopped.\n{log}")
+                    result['status'] = 'early_stopped'
+                    break
+                named_timer.add("eval")
+        else:
             result["status"] = "completed"
     except KeyboardInterrupt:
         _logger.note("Experiment interrupted by user.")
         result["status"] = "interrupted"
-        checkpoint_path = Path(args.save_path) / "checkpoint.pth"
-        save_checkpoint(
-            checkpoint_path,
-            result["steps"],
-            args,
-            model,
-            optimizer,
-            float_embedder=float_embedder,
-            equation_embedder=equation_embedder,
-            data_embedder=data_embedder,
-            scheduler=scheduler,
-            training_state={
-                "best_eval_loss": result["best_eval_loss"],
-                "best_eval_accuracy": result["best_eval_accuracy"],
-                "best_step": result["best_step"],
-                "best_checkpoint": result["best_checkpoint"],
-                "patience_left": patience_left,
-            },
-        )
-        result["checkpoint"] = str(checkpoint_path)
+    except Exception as e:
+        _logger.error(f"Experiment failed with exception: {log_exception(e)}")
+        result["status"] = "failed"
+        if args.debug:
+            raise
     finally:
-        if result["checkpoint"] is None:
-            checkpoint_path = Path(args.save_path) / "checkpoint.pth"
-            save_checkpoint(
-                checkpoint_path,
-                result["steps"],
-                args,
-                model,
-                optimizer,
-                float_embedder=float_embedder,
-                equation_embedder=equation_embedder,
-                data_embedder=data_embedder,
-                scheduler=scheduler,
-                training_state={
-                    "best_eval_loss": result["best_eval_loss"],
-                    "best_eval_accuracy": result["best_eval_accuracy"],
-                    "best_step": result["best_step"],
-                    "best_checkpoint": result["best_checkpoint"],
-                    "patience_left": patience_left,
-                },
-            )
-            result["checkpoint"] = str(checkpoint_path)
-        result["duration_seconds"] = (datetime.now() - started_at).total_seconds()
+        _logger.info("Exiting training loop, saving final checkpoint and result...")
+
+        # 保存模型
+        save_checkpoint(
+            Path(args.save_path) / "checkpoint.pth",
+            states['step'], args, model, optimizer, scheduler, states,
+            float_embedder, equation_embedder, data_embedder,
+        )
+        _logger.info(f"Final checkpoint saved to {Path(args.save_path) / 'checkpoint.pth'}")
+
+        # 保存结果
+        result["duration_seconds"] = (datetime.now() - start_time).total_seconds()
+        result['best_eval_step'] = states["best_record"]["step"]
+        result["best_eval_loss"] = states["best_record"]["loss"]
+        result["best_eval_accuracy"] = states["best_record"]["accuracy"]
+        result["total_steps"] = f"{start_step} -> {states['step']}"
         result_path = Path(args.save_path) / "result.jsonl"
+        _logger.info(f"Result saved to {result_path}")
+        
+        # 打印日志
         with open(result_path, "a", encoding="utf-8") as f:
-            json.dump(result, f, ensure_ascii=True)
+            json.dump(result, f, ensure_ascii=False)
             f.write("\n")
         _logger.note(tag2ansi(
             f'\n[gray]{"=" * 50}[reset]\n'
@@ -552,48 +442,6 @@ def main(args):
             + "\n".join([f"[red]{k.replace('_', ' ').title()}[reset]: {v}" for k, v in result.items()])
             + f'\n[gray]{"=" * 50}[reset]'
         ))
-        _logger.note(f"Result saved to {result_path}")
-    return result
-
-
-def save_checkpoint(
-    path: Path,
-    step: int,
-    args: argparse.Namespace,
-    model: FoundationModel,
-    optimizer: torch.optim.Optimizer,
-    *,
-    float_embedder: FloatEmbedder | None = None,
-    equation_embedder: EquationEmbedder | None = None,
-    data_embedder: DataEmbedder | None = None,
-    scheduler=None,
-    training_state: dict | None = None,
-) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    model_state = {"foundation_model": model.state_dict()}
-    if float_embedder is not None:
-        model_state["float_embedder"] = float_embedder.state_dict()
-    if equation_embedder is not None:
-        model_state["equation_embedder"] = equation_embedder.state_dict()
-    if data_embedder is not None:
-        model_state["data_embedder"] = data_embedder.state_dict()
-    checkpoint = {
-        "step": step,
-        "args": args,
-        "model": model_state,
-        "optimizer": optimizer.state_dict(),
-    }
-    if scheduler is not None:
-        checkpoint["scheduler"] = scheduler.state_dict()
-    if training_state is not None:
-        checkpoint["training_state"] = training_state
-    if equation_embedder is not None:
-        checkpoint["token2index"] = equation_embedder.token2index
-        checkpoint["index2token"] = equation_embedder.index2token
-    torch.save(
-        checkpoint,
-        path,
-    )
 
 
 def build_argparser() -> argparse.ArgumentParser:
@@ -617,6 +465,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--eval_size", type=int, default=128)
     parser.add_argument("--eval_batch_size", type=int, default=16)
     parser.add_argument("--eval_every", type=int, default=100)
+    parser.add_argument("--test_before_train", action="store_true", help="Run evaluation at step 0 before the first training update.")
     parser.add_argument("--eval_seed", type=int, default=0)
     parser.add_argument("--patience", type=int, default=20)
     parser.add_argument("--max_var_num", type=int, default=3)
@@ -634,7 +483,7 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--dim_feedforward", type=int, default=512)
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--max_formula_len", type=int, default=256)
-    parser.add_argument("--output_pooling", choices=["attention", "average", "last"], default="last")
+    parser.add_argument("--output_pooling", choices=["attention", "average", "last"], default="attention")
     parser.add_argument("--data_pooling", choices=["attention", "average", "sum"], default="attention")
 
     parser.add_argument("--lr", type=float, default=1e-4)

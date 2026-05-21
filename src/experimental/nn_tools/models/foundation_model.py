@@ -8,80 +8,68 @@ class FoundationModel(nn.Module):
     """Transformer model for next-symbol prediction from data/formula embeddings.
 
     Args:
-        d_model: Dimension of both input embeddings.
-        vocab_size: Number of formula symbols to predict.
-        nhead: Number of attention heads.
-        num_encoder_layers: Number of Transformer encoder layers for data embeddings.
-        num_decoder_layers: Number of Transformer decoder layers for partial formula embeddings.
-        dim_feedforward: Hidden dimension of Transformer feed-forward layers.
-        dropout: Dropout probability used by Transformer and positional encodings.
-        max_formula_len: Maximum number of formula tokens.
-        output_pooling: How to pool decoder outputs before projecting to logits.
-          Must be one of ``"attention"``, ``"average"`` or ``"last"``.
+        args.d_model:            Dimension of both input embeddings.
+        args.vocab_size:         Number of formula symbols to predict.
+        args.nhead:              Number of attention heads.
+        args.num_encoder_layers: Number of Transformer encoder layers for data embeddings.
+        args.num_decoder_layers: Number of Transformer decoder layers for partial formula embeddings.
+        args.dim_feedforward:    Hidden dimension of Transformer feed-forward layers.
+        args.dropout:            Dropout probability used by Transformer and positional encodings.
+        args.max_formula_len:    Maximum number of formula tokens.
+        args.output_pooling:     How to pool decoder outputs before projecting to logits.
+                                 Must be one of ``"attention"``, ``"average"`` or ``"last"``.
     """
 
-    def __init__(
-        self,
-        d_model: int,
-        vocab_size: int,
-        *,
-        nhead: int = 8,
-        num_encoder_layers: int = 4,
-        num_decoder_layers: int = 4,
-        dim_feedforward: int = 2048,
-        dropout: float = 0.1,
-        max_formula_len: int = 128,
-        output_pooling: str = "attention",
-    ) -> None:
+    def __init__(self, args) -> None:
         super(FoundationModel, self).__init__()
-        if d_model <= 0:
+        if args.d_model <= 0:
             raise ValueError("d_model must be positive.")
-        if vocab_size <= 0:
+        if args.vocab_size <= 0:
             raise ValueError("vocab_size must be positive.")
-        if d_model % nhead != 0:
+        if args.d_model % args.nhead != 0:
             raise ValueError("d_model must be divisible by nhead.")
-        if output_pooling not in {"attention", "average", "last"}:
+        if args.output_pooling not in {"attention", "average", "last"}:
             raise ValueError(
                 "output_pooling must be one of 'attention', 'average' or 'last', "
-                f"got {output_pooling!r}."
+                f"got {args.output_pooling!r}."
             )
 
-        self.d_model = d_model
-        self.vocab_size = vocab_size
-        self.output_pooling = output_pooling
+        self.d_model = args.d_model
+        self.vocab_size = args.vocab_size
+        self.output_pooling = args.output_pooling
         self.formula_positional_encoding = PositionalEncoding(
-            d_model=d_model,
-            dropout=dropout,
-            max_len=max_formula_len,
+            d_model=args.d_model,
+            dropout=args.dropout,
+            max_len=args.max_formula_len,
         )
 
         encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
+            d_model=args.d_model,
+            nhead=args.nhead,
+            dim_feedforward=args.dim_feedforward,
+            dropout=args.dropout,
             batch_first=True,
         )
         self.encoder = nn.TransformerEncoder(
             encoder_layer,
-            num_layers=num_encoder_layers,
+            num_layers=args.num_encoder_layers,
         )
 
         decoder_layer = nn.TransformerDecoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
+            d_model=args.d_model,
+            nhead=args.nhead,
+            dim_feedforward=args.dim_feedforward,
+            dropout=args.dropout,
             batch_first=True,
         )
         self.decoder = nn.TransformerDecoder(
             decoder_layer,
-            num_layers=num_decoder_layers,
+            num_layers=args.num_decoder_layers,
         )
 
-        if output_pooling == "attention":
-            self.output_attention_score = nn.Linear(d_model, 1)
-        self.output_projection = nn.Linear(d_model, vocab_size)
+        if args.output_pooling == "attention":
+            self.output_attention_score = nn.Linear(args.d_model, 1)
+        self.output_projection = nn.Linear(args.d_model, args.vocab_size)
 
     def forward(
         self,

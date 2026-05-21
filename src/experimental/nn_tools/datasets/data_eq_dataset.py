@@ -35,7 +35,6 @@ for item in dataloader: # 可以无限迭代生成数据
     break
 """
 from __future__ import annotations
-
 import torch
 import logging
 import warnings
@@ -48,12 +47,12 @@ from ..models import EquationEmbedder
 from .generate_eq import BaseEqGenerator
 from .generate_data import BaseDataGenerator
 
-# 屏蔽 eval 结果赋值时的 overflow 警告
+
+__all__ = ["DataEqDataset", "InfiniteSampler"]
+_logger = logging.getLogger(f"sr_agent.{__name__}")
 warnings.filterwarnings("ignore", message="overflow encountered in cast")
 warnings.filterwarnings("ignore", message="invalid value encountered in cast")
 
-_logger = logging.getLogger(f"sr_agent.{__name__}")
-__all__ = ["DataEqDataset", "InfiniteSampler"]
 
 class InfiniteSampler(D.Sampler):
     # 无限生成索引，用于 DataLoader(sampler=InfiniteSampler())
@@ -100,8 +99,10 @@ class DataEqDataset(D.Dataset):
 
     def __getitem__(self, idx):
         rng = np.random.default_rng((self.random_state, idx)) if self.random_state is not None else None
-        eqtree = self.eq_generator(_rng=rng)
-        data_dict, target, success = self.data_generator(eqtree, _rng=rng)
+        while True:
+            eqtree = self.eq_generator(_rng=rng)
+            data_dict, target, success = self.data_generator(eqtree, _rng=rng)
+            if success: break
 
         variables = sorted(data_dict)
         if len(variables) > self.max_var_num:
@@ -115,13 +116,7 @@ class DataEqDataset(D.Dataset):
             data[:, i] = np.asarray(data_dict[variable], dtype=np.float32).reshape(-1)
         data[:, -1] = np.asarray(target, dtype=np.float32).reshape(-1)
 
-        if not success:
-            _logger.warning("Generated data for formula %s contains invalid samples.", eqtree)
-
-        item = {
-            "data": torch.from_numpy(data),
-            "formula": eqtree,
-        }
+        item = {"data": torch.from_numpy(data), "formula": eqtree}
         if self.equation_embedder is not None:
             token = self.equation_embedder.tokenize(eqtree)
             index = self.equation_embedder.vectorize(token, variables)
