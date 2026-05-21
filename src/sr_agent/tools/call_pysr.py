@@ -38,18 +38,21 @@ class PySRTool(BaseTool):
         You MUST specify the binary and unary operators based on your hypothesis about the data.
 
         Args:
-            binary_operators: List of binary operators for PySR to use. Choose from: "+", "-", "*", "/", "^". Select operators you believe are relevant to the underlying formula.
+            binary_operators: List of binary operators for PySR to use. Choose from: "+", "-", "*", "/", "^".
+                Select operators you believe are relevant to the underlying formula.
             unary_operators: List of unary operators for PySR to use. Choose from: "sin", "cos", "exp", "log", "sqrt", "square", "abs", "tanh", "sign". Select operators based on your hypothesis about the data.
             x: List of input feature names to use. If not specified, all features except target are used.
                 Expressions are also supported, e.g., ["sin(x1)", "(x1-x2)**2"].
             y: Target variable name. If not specified, the default target variable is used.
                 Expressions are also supported, e.g., "log(y)", "y - x1"
-            timeout: Maximum search time in seconds (default 30, max 120). Increase for harder problems.
+            timeout: Maximum search time in seconds (default 30, max 120).
+                If PySR did not find a good formula in a previous run, increase timeout (e.g., 60 or 90) to give it more search time.
             maxsize: Maximum expression complexity in number of nodes (10-40). Larger allows more complex formulas.
             max_samples: Maximum number of data samples to use for fitting (for speed). Data is subsampled if larger.
         """
         data = self.context["data"]
         y = y or self.context["target"]
+        y = y.strip().strip('"').strip("'")
         x = x or [var for var in data if var != y]
         exceptions = []
 
@@ -131,6 +134,16 @@ class PySRTool(BaseTool):
             metrics = {"mse": float("inf")}
             is_candidate = False
 
+        # Generate retry hint if result is poor and timeout can be increased
+        retry_hint = None
+        mse = metrics.get("mse", float("inf"))
+        if (mse > 1e-3 or formula_str == "0") and timeout < MAX_TIMEOUT:
+            suggested_timeout = min(timeout * 2, MAX_TIMEOUT)
+            retry_hint = (
+                f"PySR did not find a good formula within {timeout}s. "
+                f"Consider retrying with timeout={suggested_timeout} for more thorough search."
+            )
+
         return {
             "formula": formula_str,
             "metrics": metrics,
@@ -145,6 +158,7 @@ class PySRTool(BaseTool):
                 "unary_operators": unary_operators,
             },
             "exceptions": exceptions,
+            "retry_hint": retry_hint,
         }
 
     def _run_pysr(self, X, y, x_names, binary_ops, unary_ops, timeout, maxsize):
@@ -285,6 +299,8 @@ class PySRTool(BaseTool):
             parts.append("  Pareto front (top candidates by accuracy):")
             for eq in result['pareto_front'][:5]:
                 parts.append(f"    - {eq['formula']} (loss={eq['loss']:.6g}, complexity={eq['complexity']})")
+        if result.get('retry_hint'):
+            parts.append(f"  ** Retry suggestion: {result['retry_hint']}")
         if result.get('exceptions'):
             parts.append(f"  Warnings: {'; '.join(result['exceptions'])}")
         return "\n".join(parts)
