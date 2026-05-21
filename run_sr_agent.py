@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+# Copyright (c) 2026-present, Yumeow. Licensed under the MIT License.
 """Command-line entry point for running a small SRAgent experiment."""
 
 from __future__ import annotations

@@ -42,6 +42,8 @@ tools = [
 dev = [
     "pytest>=8.0.0",
     "pytest-cov>=4.0.0",
+    "ipynbname>=2025.8.0.0",
+    "yumeow_plot>=0.1.2",
 ]
 all = [
     "sr-agent[nn,tools,dev]",
