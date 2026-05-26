@@ -88,6 +88,7 @@ class OpenRouterAPI(LLMAPI):
                 tool_call = self.tool_parser.parse_response(content)
             elif 'tool_calls' in message:
                 tool_call = self.normalize_openai_tool_calls(message['tool_calls'])
+                message['tool_calls'] = [call.raw for call in tool_call]
             else:
                 tool_call = []
                 

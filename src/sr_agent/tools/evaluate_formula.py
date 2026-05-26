@@ -31,8 +31,8 @@ class EvaluateTool(BaseTool):
         data = self.context['data']
         y = y or self.context['target']
         y = y.strip().strip('"').strip("'")
-        eq_y = nd.parse(y.replace("^", "**").replace('np.', ''))
-        eq_f = nd.parse(f.replace("^", "**").replace('np.', ''))
+        eq_y = nd.parse(y.replace("^", "**").replace('np.', '').replace('math.', ''), variables={'pi': np.pi, 'e': np.e})
+        eq_f = nd.parse(f.replace("^", "**").replace('np.', '').replace('math.', ''), variables={'pi': np.pi, 'e': np.e})
         y_true = eq_y.eval(data)
 
         variables = [var for var in eq_f.iter_preorder() if isinstance(var, nd.Variable)]

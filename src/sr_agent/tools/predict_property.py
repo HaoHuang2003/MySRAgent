@@ -94,6 +94,7 @@ class PropertyPredictorTool(BaseTool):
         """
         data = self.context["data"]
         target_name = self.context["target"]
+        exceptions = []
 
         ## 加载模型 checkpoint
         # 优先从 SR_AGENT_PROPERTY_MODEL_CHECKPOINT 路径中加载
@@ -111,6 +112,7 @@ class PropertyPredictorTool(BaseTool):
         input_vars = [v for v in data if v != target_name]
         if len(input_vars) > max_var_num:
             input_vars = input_vars[:max_var_num]
+            exceptions.append(f"Too many variables ({len(data) - 1}), only the first {max_var_num} are analyzed: {input_vars}")
             _logger.warning(f"Too many variables ({len(input_vars)}), truncated to {max_var_num}")
 
         n_vars = len(input_vars)
@@ -165,6 +167,7 @@ class PropertyPredictorTool(BaseTool):
             "multiplicative_separable": separability,
             "n_variables_analyzed": n_vars,
             "n_samples_used": sample_num,
+            "exceptions": exceptions,
         }
 
     @classmethod
@@ -202,6 +205,12 @@ class PropertyPredictorTool(BaseTool):
             lines.append("")
             lines.append("Hint: The formula may be expressible as a product of functions of individual variables, "
                          "e.g., y = f(x1) * g(x2). Try decomposing the problem.")
+                        
+        if result["exceptions"]:
+            lines.append("")
+            lines.append("Exceptions / Warnings:")
+            for ex in result["exceptions"]:
+                lines.append(f"  - {ex}")
 
         return "\n".join(lines)
 

@@ -142,6 +142,42 @@ def test_openrouter_native_tools_are_sent_and_tool_calls_are_extracted(monkeypat
     assert return_value["tool_calls"] == [ToolCall("demo_tool", {"x": 1}, id="call_1", raw=_FakeOpenRouterClient.message["tool_calls"][0])]
 
 
+def test_openrouter_skips_malformed_native_tool_calls(monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr("sr_agent.api.openrouter_api.OpenAI", _FakeOpenRouterClient)
+    _FakeOpenRouterClient.payloads = []
+    _FakeOpenRouterClient.message = {
+        "content": "ready",
+        "tool_calls": [
+            {
+                "id": "call_bad",
+                "type": "function",
+                "function": {"name": "demo_tool", "arguments": '{"x": "unterminated'},
+            },
+            {
+                "id": "call_good",
+                "type": "function",
+                "function": {"name": "demo_tool", "arguments": '{"x": 5}'},
+            },
+        ],
+    }
+
+    api = OpenRouterAPI(
+        model="deepseek/deepseek-v4-pro",
+        parser="openai",
+        tool_list=[DemoTool],
+    )
+    chunks, return_value = _consume(api([{"role": "user", "content": "use the tool"}]))
+
+    expected_call = ToolCall("demo_tool", {"x": 5}, id="call_good", raw=_FakeOpenRouterClient.message["tool_calls"][1])
+    assert chunks == [("ready", [expected_call], {
+        "role": "assistant",
+        "content": "ready",
+        "tool_calls": [_FakeOpenRouterClient.message["tool_calls"][1]],
+    })]
+    assert return_value["tool_calls"] == [expected_call]
+
+
 def test_openrouter_text_parser_injects_tool_prompt_and_parses_action(monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     monkeypatch.setattr("sr_agent.api.openrouter_api.OpenAI", _FakeOpenRouterClient)

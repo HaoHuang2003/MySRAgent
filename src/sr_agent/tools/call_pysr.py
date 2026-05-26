@@ -60,7 +60,7 @@ class PySRTool(BaseTool):
         timeout = max(10, min(timeout, MAX_TIMEOUT))
 
         try:
-            eq_y = nd.parse(y.replace('^', '**').replace('np.', ''))
+            eq_y = nd.parse(y.replace('^', '**').replace('np.', '').replace('math.', ''), variables={'pi': np.pi, 'e': np.e})
             data_y = eq_y.eval(data).flatten()
         except Exception as e:
             raise ValueError(
@@ -74,7 +74,7 @@ class PySRTool(BaseTool):
         x_names = []
         for idx, xi in enumerate(x, 1):
             try:
-                eq_x = nd.parse(xi.replace('^', '**').replace('np.', ''))
+                eq_x = nd.parse(xi.replace('^', '**').replace('np.', '').replace('math.', ''), variables={'pi': np.pi, 'e': np.e})
                 data_x = eq_x.eval(data).flatten()
                 eq_x_list.append(eq_x)
                 data_x_list.append(data_x)

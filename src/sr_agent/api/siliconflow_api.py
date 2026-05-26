@@ -92,6 +92,7 @@ class SiliconFlowAPI(LLMAPI):
                 tool_call = self.tool_parser.parse_response(content)
             else:
                 tool_call = self.normalize_openai_tool_calls(choice["message"].get("tool_calls"))
+                choice["message"]["tool_calls"] = [call.raw for call in tool_call]
             details.append({
                 "content": content,
                 "tool_call": tool_call,
@@ -155,6 +156,7 @@ class SiliconFlowAPI(LLMAPI):
                 tool_call = self.tool_parser.parse_response(content)
             else:
                 tool_call = self.normalize_openai_tool_calls(message.get("tool_calls"))
+                message["tool_calls"] = [call.raw for call in tool_call]
             details.append({
                 "content": content,
                 "tool_call": tool_call,

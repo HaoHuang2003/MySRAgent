@@ -123,6 +123,7 @@ class OpenAIAPI(LLMAPI):
                     tool_call = self.tool_parser.parse_response(content)
                 else:
                     tool_call = self.normalize_openai_tool_calls(message["tool_calls"])
+                    message["tool_calls"] = [call.raw for call in tool_call]
                 yield {'content': content, 'tool_call': tool_call, 'message': message}
                 results = {
                     'usage': usage,
@@ -162,6 +163,7 @@ class OpenAIAPI(LLMAPI):
                         tool_call = self.tool_parser.parse_response(content)
                     else:
                         tool_call = self.normalize_openai_tool_calls(message["tool_calls"])
+                        message["tool_calls"] = [call.raw for call in tool_call]
                     yield {'content': content, 'tool_call': tool_call, 'message': message}
                     new_usage = self.parse_usage(child_response)
                     for k, v in new_usage['token'].items():
@@ -233,6 +235,7 @@ class OpenAIAPI(LLMAPI):
                     tool_call = self.tool_parser.parse_response(content)
                 else:
                     tool_call = self.normalize_openai_tool_calls(message["tool_calls"])
+                    message["tool_calls"] = [call.raw for call in tool_call]
                 details.append({
                     'content': content,
                     'tool_call': tool_call,

@@ -46,7 +46,7 @@ class PolynomialFitTool(BaseTool):
         exceptions = []
 
         try:
-            eq_y = nd.parse(y.replace('^', '**').replace('np.', ''))
+            eq_y = nd.parse(y.replace('^', '**').replace('np.', '').replace('math.', ''), variables={'pi': np.pi, 'e': np.e})
             data_y = eq_y.eval(data).flatten()
         except Exception as e:
             raise ValueError(
@@ -57,7 +57,7 @@ class PolynomialFitTool(BaseTool):
         eq_x_list = []
         for xi in x:
             try:
-                eq_x = nd.parse(xi.replace('^', '**').replace('np.', ''))
+                eq_x = nd.parse(xi.replace('^', '**').replace('np.', '').replace('math.', ''), variables={'pi': np.pi, 'e': np.e})
                 data_x = eq_x.eval(data).flatten()
                 eq_x_list.append(eq_x)
                 assert data_x.shape == data_y.shape, f"Feature '{xi}' shape {data_x.shape} does not match target shape {data_y.shape}."
