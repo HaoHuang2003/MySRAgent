@@ -115,6 +115,8 @@ class BaseTool(ABC, FactoryMixin):
         start_time = time.time()
         try:
             result = self.execute(*args, **kwargs)
+            if not isinstance(result, dict):
+                _logger.critical(f"Tool {self.metadata.name} execute() should return a dict, but got {type(result)}, please check the implementation.")
             result_str = self.format_result_dict(result)
             meta_data = {
                 "timestamp": start_time,

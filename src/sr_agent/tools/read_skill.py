@@ -1,5 +1,5 @@
 # Copyright (c) 2026-present, Yumeow. Licensed under the MIT License.
-from pathlib import Path
+from typing import Any, Dict
 from xml.sax.saxutils import escape
 from ..skills import SkillRegistry
 from .base_tool import BaseTool, ToolMetadata
@@ -33,7 +33,7 @@ class ReadSkill(BaseTool):
         description=_format_skills_description(),
     )
 
-    def execute(self, name: str) -> str:
+    def execute(self, name: str) -> Dict[str, Any]:
         """Read the content of a skill by its name.
 
         Args:
@@ -42,9 +42,12 @@ class ReadSkill(BaseTool):
         skills_dir = self.context.get("skills_dir", None)
         registry = SkillRegistry(skills_dir)
         skill = registry.get_skills(name)
-        return (
+        return {"content" : (
             f'<skill_content name="{escape(skill.name)}">\n'
             f"{skill.content}\n"
             f"</skill_content>"
-        )
+        )}
 
+    @classmethod
+    def format_result_dict(cls, result: Dict[str, Any]) -> str:
+        return result["content"]

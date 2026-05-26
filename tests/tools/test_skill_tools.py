@@ -102,10 +102,27 @@ class TestReadSkillTool:
         tool = ReadSkill(skills_dir=tmp_path / "skills")
         result = tool.execute(name="readable-skill")
 
-        assert result.startswith('<skill_content name="readable-skill">')
-        assert "# Readable Skill" in result
-        assert "Read me." in result
-        assert result.rstrip().endswith("</skill_content>")
+        assert result["name"] == "readable-skill"
+        assert result["content"].startswith('<skill_content name="readable-skill">')
+        assert "# Readable Skill" in result["content"]
+        assert "Read me." in result["content"]
+        assert result["content"].rstrip().endswith("</skill_content>")
+
+    def test_call_returns_dict_result_and_wrapped_content_string(self, tmp_path: Path):
+        create_tool = CreateSkill(skills_dir=tmp_path / "skills")
+        create_tool.execute(
+            name="callable-skill",
+            description="Use this skill for tool call tests.",
+            content="# Callable Skill\n\nRead me through BaseTool.",
+        )
+
+        result = ReadSkill(skills_dir=tmp_path / "skills")(name="callable-skill")
+
+        assert result.ok is True
+        assert result.result["name"] == "callable-skill"
+        assert result.get("metrics") is None
+        assert result.result_str.startswith('<skill_content name="callable-skill">')
+        assert "# Callable Skill" in result.result_str
 
     def test_execute_rejects_missing_skill(self, tmp_path: Path):
         tool = ReadSkill(skills_dir=tmp_path / "skills")
