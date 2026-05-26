@@ -386,7 +386,7 @@
           <div class="legend-row"><span class="sample node-dot"></span><span>Node: one local sample from the agent.</span></div>
           <div class="legend-row"><span class="sample line"></span><span>Solid edge: strong context inheritance.</span></div>
           <div class="legend-row"><span class="sample line weak"></span><span>Dashed edge: weak parent, partial tool-call context.</span></div>
-          <div class="legend-row"><span></span><span>Color: better MSE shifts from gray/red toward green.</span></div>
+          <div class="legend-row"><span></span><span>Color: R2 is auto-scaled per graph; min clipped at 0 is red, max is green.</span></div>
         </div>
       </div>
       <svg id="graph" width="1200" height="760" role="img" aria-label="Search graph"></svg>
@@ -811,12 +811,32 @@
 
     function colorFor(record) {
       const score = record.core && record.core.score;
-      const mse = score && Number(score.mse);
-      if (!Number.isFinite(mse)) return "#718096";
-      if (mse === 0) return "#1b8a5a";
-      const value = Math.max(0, Math.min(1, -Math.log10(mse + 1e-12) / 8));
-      const hue = 8 + value * 132;
-      return `hsl(${hue}, 62%, 44%)`;
+      const r2 = score && Number(score.r2);
+      if (!Number.isFinite(r2)) return "#718096";
+      const domain = r2ColorDomain();
+      if (domain.max <= domain.min) return "#8b0000";
+      const value = Math.max(domain.min, Math.min(domain.max, Math.max(0, r2)));
+      const scaled = (value - domain.min) / (domain.max - domain.min);
+      if (scaled <= 0.5) {
+        const t = scaled / 0.5;
+        return rgbHex(139 + (245 - 139) * t, 0 + (197 - 0) * t, 0);
+      }
+      const t = (scaled - 0.5) / 0.5;
+      return rgbHex(245 + (0 - 245) * t, 197 + (104 - 197) * t, 0 + (55 - 0) * t);
+    }
+
+    function r2ColorDomain() {
+      const values = [...state.records.values()]
+        .map(record => record.core && record.core.score && Number(record.core.score.r2))
+        .filter(Number.isFinite)
+        .map(value => Math.max(0, value));
+      if (values.length <= 1) return { min: 0, max: 0 };
+      return { min: Math.min(...values), max: Math.max(...values) };
+    }
+
+    function rgbHex(r, g, b) {
+      const toHex = value => Math.round(value).toString(16).padStart(2, "0");
+      return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
     }
 
     function showCore(record) {
