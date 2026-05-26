@@ -14,12 +14,14 @@ class DeepSeekAPI(LLMAPI):
     supported_models = [
         "deepseek-chat",
         "deepseek-reasoner",
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
     ]
 
     def __init__(self, model='deepseek-chat', **kwargs):
         super().__init__(model=model, **kwargs)
 
-    def _request(self, messages: List[Dict[str, str]], n=1, max_tokens=1024) -> Generator[str, None, Dict]:
+    def _request(self, messages: List[Dict[str, str]], n=1, max_tokens=1024, temperature=1) -> Generator[str, None, Dict]:
         ## Ensure this is a generator
         yield from []
         api_key = os.environ.get("DEEPSEEK_API_KEY", None)
@@ -29,6 +31,7 @@ class DeepSeekAPI(LLMAPI):
             "messages": messages, 
             "stream": False, 
             "max_tokens": max_tokens,
+            "temperature": temperature,
         }
         if not self.tool_list:
             pass
@@ -55,7 +58,8 @@ class DeepSeekAPI(LLMAPI):
             price_usage = {}
             price_usage['prompt'] = 0.28 / 1e6 * token_usage['prompt']
             price_usage['answer'] = 0.42 / 1e6 * token_usage['answer']
-            price_usage['other']  = 0.42 / 1e6 * token_usage['other']
+            if 'other' in token_usage:
+                price_usage['other']  = 0.42 / 1e6 * token_usage['other']
 
             message = response.choices[0].message
             content = message.content or ""

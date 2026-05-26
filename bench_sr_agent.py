@@ -70,7 +70,8 @@ def build_argparser() -> argparse.ArgumentParser:
     parser.add_argument("--data_root", type=str, default=str(Path(__file__).parent / "data" / "llm-srbench-data"), help="HDF5 数据文件所在目录")
     parser.add_argument("--datasets", type=str, default=None, nargs="+", choices=list(DATASET_SPLITS.keys()), help="数据集名称, 默认评估全部数据集")
     parser.add_argument("--problem_names", type=str, default=None, nargs="+", help="仅评估指定问题（方程）ID, 默认评估全部问题")
-    parser.add_argument("--skip_existing", action="store_true", default=True, help="如果结果文件已存在则跳过评估")
+    parser.add_argument("--skip_existing", action="store_true", default=False, help="如果结果文件已存在则跳过评估")
+    parser.add_argument("--skip_successful", action="store_true", default=True, help="如果结果文件已存在且成功则跳过评估")
     # 解析 --alg 参数以获取对应的 update_parser
     args, _ = parser.parse_known_args()
     if (update_parser_fn := get_update_parser(args.algorithm)):
@@ -176,6 +177,7 @@ def evaluate_problem(args, problem: Problem, sr_fn: Callable) -> Dict:
 
     # Symbolic Accurate
     try:
+        import sympy
         eq1 = sympy.sympify(result.expression)
         eq2 = sympy.sympify(problem.expression)
         diff = sympy.simplify(eq1 - eq2)
@@ -204,15 +206,20 @@ def log_result(result: Dict):
     lines.append(f'[gray]{"-" * 50}')
     lines.append(f"[blue]GT: [green]{result['gt_expression']}[reset]")
     lines.append(f"[blue]Discovered: [red]{result['discovered_expression']}[reset]")
-    lines.append(f"[blue]Symbolic Accurate:[reset] {'[green]Yes[reset]' if result['symbolic_acc'] else '[red]No[reset]'}")
+    if symbolic_acc := result.get("symbolic_acc") is None:
+        lines.append(f"[blue]Symbolic Accurate:[reset] [gray]N/A[reset]")
+    elif symbolic_acc:
+        lines.append(f"[blue]Symbolic Accurate:[reset] [green]Yes[reset]")
+    else:
+        lines.append(f"[blue]Symbolic Accurate:[reset] [red]No[reset]")
     if 'id_metrics' in result and result['id_metrics'] is not None:
         lines.append(
-            f"[blue]In-Domain: R2={result['id_metrics']['r2']:.6f}, "
-            f"MSE={result['id_metrics']['mse']:.6f}, "
-            f"NMSE={result['id_metrics']['nmse']:.6f}, "
-            f"MAPE={result['id_metrics']['mape']:.6f}, "
-            f"Acc@0.1={result['id_metrics']['acc01']:.6f}, "
-            f"Valid Points={result['id_metrics']['num_valid_points']}"
+            f"[blue]In-Domain: R2={result['id_metrics'].get('r2', float('nan')):.6f}, "
+            f"MSE={result['id_metrics'].get('mse', float('nan')):.6f}, "
+            f"NMSE={result['id_metrics'].get('nmse', float('nan')):.6f}, "
+            f"MAPE={result['id_metrics'].get('mape', float('nan')):.6f}, "
+            f"Acc@0.1={result['id_metrics'].get('acc01', float('nan')):.6f}, "
+            f"Valid Points={result['id_metrics'].get('num_valid_points', 0)}"
         )
     if 'ood_metrics' in result and result['ood_metrics'] is not None:
         lines.append(
@@ -248,7 +255,7 @@ def aggregate_results(results: List[Dict]) -> Dict:
         "dataset": results[0].get("equation_id", "").split("_")[0] if results else "",
         "total_problems": n,
         "avg_search_time": float(np.mean([r["search_time"] for r in results])),
-        "avg_symbolic_acc": float(np.mean([r["symbolic_acc"] for r in results])),
+        "avg_symbolic_acc": float(np.mean([r.get("symbolic_acc", False) for r in results])),
         "r2_hit_rates": r2_hit_rates,
     }
     summary["id_metrics"] = {
@@ -272,15 +279,9 @@ def aggregate_results(results: List[Dict]) -> Dict:
         }
     return summary
 
-def conclude_results(llmsr_datasets: List[str], save_path: str):
+def conclude_results(results: List[Dict], llmsr_datasets: List[str], save_path: str):
     # 汇总
-    results = []
-    for dataset in llmsr_datasets:
-        for exp_path in (Path(args.save_path) / "results").glob(f"{dataset}_*.jsonl"):
-            with open(exp_path, "r", encoding="utf-8") as f:
-                for line in f:
-                    if 'error' not in (result := json.loads(line)):
-                        results.append(result)
+    results = [r for r in results if r.get("dataset_identifier") in llmsr_datasets]
     summary = aggregate_results(results)
 
     # 打印汇总
@@ -345,23 +346,34 @@ def main(args: argparse.Namespace) -> dict:
     sr_fn = get_algorithm(args.algorithm)
 
     # 逐个问题运行 SR 并评估
+    results = []
     for i, problem in enumerate(problems):
         _logger.note(f"[{i+1}/{len(problems)}] {problem.equation_idx}: {problem.expression}")
         exp_path = Path(args.save_path) / "results" / f"{problem.dataset_identifier}_{problem.equation_idx}.jsonl"
         exp_path.parent.mkdir(parents=True, exist_ok=True)
-        if exp_path.exists() and args.skip_existing:
-            lines = [json.loads(line) for line in exp_path.read_text(encoding="utf-8").strip().splitlines()]
-            n = len(lines)
-            m = sum(1 for line in lines if 'error' not in line)
-            result = lines[-1] if m == 0 else [line for line in reversed(lines) if 'error' not in line][0]
-            _logger.info(tag2ansi(
-                f"Result already exists at {exp_path} ([red bold]{n} records with [red bold]{m} successful), skipping...\n"
-                f"Last result:\n{log_result(result)}"
-            ))
-            continue
+        if exp_path.exists():
+            lines = [json.loads(line) for line in exp_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+            successful_lines = [line for line in lines if 'error' not in line]
+            if args.skip_successful and successful_lines:
+                result = successful_lines[-1]
+                results.append(result)
+                _logger.info(tag2ansi(
+                    f"Successful result already exists at {exp_path} ([red bold]{len(successful_lines)} successful records), skipping...\n"
+                    f"Last successful result:\n{log_result(result)}"
+                ))
+                continue
+            if args.skip_existing and lines:
+                result = successful_lines[-1] if successful_lines else lines[-1]
+                results.append(result)
+                _logger.info(tag2ansi(
+                    f"Result already exists at {exp_path} ([red bold]{len(lines)} records with [red bold]{len(successful_lines)} successful), skipping...\n"
+                    f"Last result:\n{log_result(result)}"
+                ))
+                continue
 
         try:
             result = evaluate_problem(args, problem, sr_fn)
+            results.append(result)
             _logger.note(f"\n{log_result(result)}")
             with open(exp_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(result, default=str, allow_nan=True) + "\n")
@@ -380,19 +392,22 @@ def main(args: argparse.Namespace) -> dict:
                 "search_time": float("nan"),
                 "id_metrics": {
                     "mse": float("nan"), "nmse": float("nan"), "r2": float("nan"),
-                    "kdt": float("nan"), "mape": float("nan"), "num_valid_points": 0
+                    "kdt": float("nan"), "mape": float("nan"), "acc01": float("nan"),
+                    "num_valid_points": 0
                 },
                 "ood_metrics": None,
+                "symbolic_acc": False,
                 "error": str(e),
             }
+            results.append(result)
             with open(exp_path, "a", encoding="utf-8") as f:
                 f.write(json.dumps(result, default=str, allow_nan=True) + "\n")
             if args.debug: raise
 
     # 汇总结果
     for dataset in args.datasets:
-        conclude_results([dataset], save_path=Path(args.save_path) / "summary" / f"{dataset}.json")
-    conclude_results(list(DATASET_SPLITS.keys()), save_path=Path(args.save_path) / "summary" / f"all.json")
+        conclude_results(results, [dataset], save_path=Path(args.save_path) / "summary" / f"{dataset}.json")
+    conclude_results(results, list(DATASET_SPLITS.keys()), save_path=Path(args.save_path) / "summary" / f"all.json")
 
 
 if __name__ == "__main__":
