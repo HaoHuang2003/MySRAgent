@@ -33,9 +33,8 @@ from datetime import datetime
 from socket import gethostname
 from nn_tools.datasets.generate_eq import BaseEqGenerator
 from nn_tools.datasets.generate_data import BaseDataGenerator
-from nn_tools.datasets.data_property_dataset import (
-    DataPropertyDataset, InfiniteSampler, _load_srbench_items,
-)
+from nn_tools.datasets.data_property_dataset import DataPropertyDataset, InfiniteSampler
+from nn_tools.datasets.srbench_data import load_srbench_items
 from nn_tools.datasets.compute_labels import MONO_CLASSES, CONV_CLASSES
 from nn_tools.models import FloatEmbedder, DataEmbedder, PropertyPredictionModel
 from sr_agent.utils import setup_logging, seed_all
@@ -262,8 +261,9 @@ def main(args):
     # Load SRBench HDF5 train data for mixing
     srbench_items = []
     if args.srbench_mix_ratio > 0:
-        srbench_items = _load_srbench_items(
-            str(HDF5_PATH), str(LABEL_PATH),
+        srbench_items = load_srbench_items(
+            hdf5_path=str(HDF5_PATH),
+            label_path=str(LABEL_PATH),
             max_var_num=args.max_var_num,
             sample_num=args.sample_num,
             splits=("train",),

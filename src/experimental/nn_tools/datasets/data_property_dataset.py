@@ -31,8 +31,9 @@ from .compute_labels import (
     label_signature, coarse_label_key,
     MONO_CLASSES, CONV_CLASSES,
 )
+from .srbench_data import load_srbench_items
 
-__all__ = ["DataPropertyDataset", "SRBenchPropertyDataset", "InfiniteSampler"]
+__all__ = ["DataPropertyDataset", "InfiniteSampler", "load_srbench_items"]
 _logger = logging.getLogger(f"sr_agent.{__name__}")
 warnings.filterwarnings("ignore", message="overflow encountered in cast")
 warnings.filterwarnings("ignore", message="invalid value encountered in cast")
@@ -41,103 +42,6 @@ warnings.filterwarnings("ignore", message="invalid value encountered in cast")
 class InfiniteSampler(D.Sampler):
     def __iter__(self):
         return itertools.count()
-
-
-def _load_srbench_items(
-    hdf5_path: str,
-    label_path: str,
-    max_var_num: int,
-    sample_num: int,
-    splits: tuple = ("train",),
-    seed: int = 42,
-) -> List[Dict]:
-    """Pre-load LLM-SRBench HDF5 data as list of dicts matching dataset format."""
-    import h5py
-
-    hdf5_path = Path(hdf5_path)
-    label_path = Path(label_path)
-    if not hdf5_path.exists() or not label_path.exists():
-        _logger.warning("SRBench data not found, skipping HDF5 mixing.")
-        return []
-
-    labels = json.load(open(label_path))
-    ds_map = {
-        "lsr_synth_chem_react": "chem_react",
-        "lsr_synth_phys_osc": "phys_osc",
-        "lsr_synth_matsci": "matsci",
-    }
-
-    items = []
-    rng = np.random.default_rng(seed)
-
-    with h5py.File(hdf5_path, "r") as f:
-        for lab in labels:
-            ds_name = lab["dataset"]
-            name = lab["name"]
-            n_vars = lab["n_variables"]
-            if n_vars > max_var_num or n_vars == 0:
-                continue
-
-            try:
-                if ds_name == "lsr_transform":
-                    grp = f["lsr_transform"][name]
-                else:
-                    grp = f["lsr_synth"][ds_map[ds_name]][name]
-
-                arrays = []
-                for split in splits:
-                    if split in grp and isinstance(grp[split], h5py.Dataset):
-                        arrays.append(grp[split][:])
-                if not arrays:
-                    continue
-                raw = np.concatenate(arrays, axis=0)
-            except Exception:
-                continue
-
-            mask_fin = np.all(np.isfinite(raw), axis=1)
-            raw = raw[mask_fin]
-            if raw.shape[0] < 20:
-                continue
-
-            S = min(raw.shape[0], sample_num)
-            idx = rng.choice(raw.shape[0], S, replace=False)
-            sampled = raw[idx]
-
-            data = np.zeros((S, max_var_num + 1), dtype=np.float32)
-            for i in range(min(n_vars, sampled.shape[1] - 1)):
-                data[:, i] = sampled[:, i + 1].astype(np.float32)
-            data[:, -1] = sampled[:, 0].astype(np.float32)
-
-            vars_list = lab["variables"]
-            mono_raw = np.array([lab["monotonicity"].get(v, 0) for v in vars_list[:n_vars]], dtype=np.int64)
-            conv_raw = np.array([lab["convexity"].get(v, 0) for v in vars_list[:n_vars]], dtype=np.int64)
-            period = np.array([lab["periodicity"].get(v, 0) for v in vars_list[:n_vars]], dtype=np.int64)
-            mono_labels = np.clip(mono_raw, 0, 3)
-            mono_labels[mono_raw == 4] = 3
-            conv_labels = np.clip(conv_raw, 0, 3)
-            conv_labels[conv_raw == 4] = 3
-
-            mono_padded = np.zeros(max_var_num, dtype=np.int64)
-            conv_padded = np.zeros(max_var_num, dtype=np.int64)
-            period_padded = np.zeros(max_var_num, dtype=np.int64)
-            mono_padded[:n_vars] = mono_labels
-            conv_padded[:n_vars] = conv_labels
-            period_padded[:n_vars] = period
-
-            var_mask = np.zeros(max_var_num, dtype=bool)
-            var_mask[:n_vars] = True
-
-            items.append({
-                "data": torch.from_numpy(data),
-                "var_mask": torch.from_numpy(var_mask),
-                "monotonicity": torch.from_numpy(mono_padded),
-                "convexity": torch.from_numpy(conv_padded),
-                "periodicity": torch.from_numpy(period_padded),
-                "mul_sep": torch.tensor(lab["multiplicative_separable"], dtype=torch.long),
-            })
-
-    _logger.info(f"Loaded {len(items)} SRBench items from splits={splits}")
-    return items
 
 
 def _is_trivial_sample(mono_labels, conv_labels, n_vars):
@@ -484,24 +388,3 @@ class DataPropertyDataset(D.Dataset):
         return InfiniteSampler() if self.n_samples is None else None
 
 
-class SRBenchPropertyDataset(D.Dataset):
-    """Finite dataset loading LLM-SRBench HDF5 data with GT labels (4-class encoding)."""
-
-    def __init__(
-        self,
-        hdf5_path: str,
-        label_path: str,
-        max_var_num: int,
-        sample_num: int = 200,
-        splits: tuple = ("train",),
-        seed: int = 42,
-    ):
-        self.items = _load_srbench_items(
-            hdf5_path, label_path, max_var_num, sample_num, splits, seed,
-        )
-
-    def __len__(self):
-        return len(self.items)
-
-    def __getitem__(self, idx):
-        return self.items[idx]
